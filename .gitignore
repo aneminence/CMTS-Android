@@ -1,0 +1,19 @@
+﻿# Build / IDE / local secrets
+.gradle/
+**/build/
+local.properties
+.idea/
+.toolchain/
+
+# Kotlin / Android Studio extras
+.kotlin/
+*.iml
+.DS_Store
+captures/
+
+# Packaged binaries (rebuild from source)
+*.apk
+*.aab
+
+# Runtime evidence and large local artifacts (keep local only)
+evidence/
