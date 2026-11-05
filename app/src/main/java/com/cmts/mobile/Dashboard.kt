@@ -20,8 +20,8 @@ import java.util.Locale
 internal fun dashboardValue(value: Double?, scale: Double = 1.0, digits: Int = 1): String =
     value?.takeIf { it.isFinite() }?.let { String.format(Locale.US, "%.${digits}f", it * scale) } ?: "—"
 
-internal fun isFresh(sample: Sample?, now: Long, running: Boolean): Boolean =
-    running && sample != null && now >= sample.nanos && now - sample.nanos <= 3_000_000_000L
+internal fun isFresh(sample: Sample?, now: Long, live: Boolean): Boolean =
+    live && sample != null && now >= sample.nanos && now - sample.nanos <= 3_000_000_000L
 
 @Composable
 fun Dashboard(replay: ReplayFrame? = null, landscape: Boolean = false) {
@@ -191,7 +191,7 @@ private data class DashboardModel(
 @Composable
 private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
  val samples = replay?.samples ?: Live.samples
- val running = replay != null || Live.running
+ val running = replay != null || Live.running || Live.serviceAlive
  var clockTick by remember { mutableIntStateOf(0) }
  LaunchedEffect(Unit) { while(true) { delay(1000); clockTick++ } }
  val now = replay?.nanos ?: clockTick.let { SystemClock.elapsedRealtimeNanos() }

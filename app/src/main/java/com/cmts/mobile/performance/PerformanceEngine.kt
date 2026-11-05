@@ -125,7 +125,13 @@ class PerformanceEngine {
         if (phase !in ACTIVE) return
         val last = lastAccepted
         if (last != null && nowNanos - last.receivedTimeNanos > cfg.quality.maxSampleAgeNs) {
-            fail(QualityReason.WATCHDOG_STALE)
+            // Waiting: soft-recover (phone GNSS often >1s gaps). Running: hard fail.
+            if (phase == PerformancePhase.Running || phase == PerformancePhase.FinishCandidate) {
+                fail(QualityReason.WATCHDOG_STALE)
+            } else {
+                softWarn(QualityReason.WATCHDOG_STALE)
+                resetBand()
+            }
             return
         }
         val anchor = runStartedAtNanos ?: armedAtNanos

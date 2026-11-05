@@ -14,6 +14,21 @@ import java.util.concurrent.atomic.AtomicLong
  * Bridges CaptureService raw GNSS to one or more [PerformanceEngine] instances (multi-segment).
  * Same raw samples are fed to every armed segment; each persists its own attempt + result.
  */
+
+/** UI draft for one selectable test segment; persisted across sheet collapse / pager dispose. */
+data class SegmentDraft(
+    val mode: PerformanceMode,
+    val selected: Boolean,
+    val startKmh: String,
+    val endKmh: String,
+)
+
+fun defaultSegmentDrafts(): List<SegmentDraft> = listOf(
+    SegmentDraft(PerformanceMode.ACCEL_0_TO_X, true, "0", "60"),
+    SegmentDraft(PerformanceMode.ACCEL_X_TO_Y, true, "60", "100"),
+    SegmentDraft(PerformanceMode.BRAKE_X_TO_Y, true, "100", "60"),
+    SegmentDraft(PerformanceMode.BRAKE_X_TO_0, true, "60", "0"),
+)
 object PerformanceController {
     private val main = Handler(Looper.getMainLooper())
     private val lock = Any()
@@ -49,9 +64,66 @@ object PerformanceController {
     var historyRevision by mutableStateOf(0)
         private set
 
+    /** Segment threshold drafts — survives PerformancePane leaving composition (sheet peek / page switch). */
+    var drafts by mutableStateOf(defaultSegmentDrafts())
+        private set
+
+    /** Completed scores from the current arm session, appended one-by-one as each segment finishes. */
+    var sessionResults by mutableStateOf<List<AttemptSummary>>(emptyList())
+        private set
+
+    /** Accrued under [lock]; copied to [sessionResults] on main to avoid lost updates. */
+    private val sessionResultsAcc = mutableListOf<AttemptSummary>()
+
+    private var settingsFile: File? = null
+
     fun ensureRepo(filesDir: File): PerformanceRepository {
+        loadSettings(filesDir)
         repository?.let { return it }
         return PerformanceRepository(File(filesDir, "performance")).also { repository = it }
+    }
+
+    fun loadSettings(filesDir: File) {
+        val file = File(filesDir, "performance/ui_settings.json")
+        settingsFile = file
+        if (!file.exists()) return
+        runCatching {
+            val o = org.json.JSONObject(file.readText())
+            val arr = o.getJSONArray("drafts")
+            val loaded = mutableListOf<SegmentDraft>()
+            for (i in 0 until arr.length()) {
+                val d = arr.getJSONObject(i)
+                loaded += SegmentDraft(
+                    mode = PerformanceMode.valueOf(d.getString("mode")),
+                    selected = d.getBoolean("selected"),
+                    startKmh = d.getString("startKmh"),
+                    endKmh = d.getString("endKmh"),
+                )
+            }
+            if (loaded.size == 4) drafts = loaded
+        }
+    }
+
+    fun updateDrafts(next: List<SegmentDraft>, filesDir: File? = null) {
+        drafts = next
+        if (settingsFile == null && filesDir != null) {
+            settingsFile = File(filesDir, "performance/ui_settings.json")
+        }
+        val file = settingsFile ?: return
+        runCatching {
+            file.parentFile?.mkdirs()
+            val arr = org.json.JSONArray()
+            next.forEach { d ->
+                arr.put(
+                    org.json.JSONObject()
+                        .put("mode", d.mode.name)
+                        .put("selected", d.selected)
+                        .put("startKmh", d.startKmh)
+                        .put("endKmh", d.endKmh),
+                )
+            }
+            file.writeText(org.json.JSONObject().put("schema", 1).put("drafts", arr).toString(2))
+        }
     }
 
     fun bindCaptureSession(sessionId: String?) {
@@ -144,6 +216,8 @@ object PerformanceController {
         segments = created
         sampleSeq.set(0)
         if (captureSessionId == null) clockDomain = "perf:${created.first().handle.id}"
+        sessionResultsAcc.clear()
+        sessionResults = emptyList()
         armed.set(true)
         holdCapture = true
         synchronized(lock) { publishLocked() }
@@ -184,6 +258,29 @@ object PerformanceController {
             try {
                 repo.writeResult(seg.handle, result)
                 historyRevision++
+                if (result.phase == PerformancePhase.Completed) {
+                    val summary = AttemptSummary(
+                        id = seg.handle.id,
+                        dir = seg.handle.dir,
+                        modifiedMs = System.currentTimeMillis(),
+                        mode = seg.config.mode,
+                        startSpeedKmh = seg.config.startSpeedKmh,
+                        endSpeedKmh = seg.config.endSpeedKmh,
+                        latestVersion = 1,
+                        latestPhase = result.phase,
+                        latestQuality = result.quality,
+                        latestDurationNs = result.durationNs,
+                        latestDistanceMeters = result.distanceMeters,
+                    )
+                    // Accrue under lock, publish copy on main (one row at a time, no lost updates).
+                    sessionResultsAcc += summary
+                    val published = sessionResultsAcc.toList()
+                    main.post { sessionResults = published }
+                    publishMessage(
+                        "出成绩 · ${seg.config.mode.shortLabel()} " +
+                            "${trim(seg.config.startSpeedKmh)}→${trim(seg.config.endSpeedKmh)}",
+                    )
+                }
             } catch (e: Exception) {
                 publishMessage("保存成绩失败: ${e.message}")
                 runCatching { repo.closeSamples(seg.handle) }
@@ -196,7 +293,8 @@ object PerformanceController {
     private fun maybeReleaseLocked() {
         if (segments.isNotEmpty() && segments.all { it.finished }) {
             val n = segments.size
-            releaseLocked("全部 $n 段已结束，成绩已写入表")
+            val ok = segments.count { it.engine.snapshot().phase == PerformancePhase.Completed }
+            releaseLocked("本轮结束 · 出成绩 $ok / $n 段")
         }
     }
 
@@ -250,6 +348,6 @@ object PerformanceController {
 fun PerformanceMode.shortLabel(): String = when (this) {
     PerformanceMode.ACCEL_0_TO_X -> "起步"
     PerformanceMode.ACCEL_X_TO_Y -> "加速"
-    PerformanceMode.BRAKE_X_TO_0 -> "刹停"
+    PerformanceMode.BRAKE_X_TO_0 -> "制动"
     PerformanceMode.BRAKE_X_TO_Y -> "减速"
 }

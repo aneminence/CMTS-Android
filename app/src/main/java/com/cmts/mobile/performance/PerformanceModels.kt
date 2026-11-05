@@ -70,10 +70,16 @@ data class ZeroSpeedConfig(
 }
 
 data class QualityConfig(
-    /** Max allowed gap between consecutive *accepted* sample times while Running. */
-    val maxSampleGapNs: Long = 500_000_000L,
-    /** Max age of last sample vs watchdog now while Armed/Running. */
-    val maxSampleAgeNs: Long = 1_000_000_000L,
+    /**
+     * Max allowed gap between consecutive *accepted* sample times while Running.
+     * Phone GNSS is typically ~1 Hz; 500ms was failing every run before any threshold score.
+     */
+    val maxSampleGapNs: Long = 2_500_000_000L,
+    /**
+     * Max age of last sample vs watchdog now while Armed/Running.
+     * Must exceed typical phone GNSS interval with headroom (was 1s → WATCHDOG_STALE self-stop).
+     */
+    val maxSampleAgeNs: Long = 3_500_000_000L,
     /** Soft warn threshold; null skips accuracy checks. */
     val warnSpeedAccuracyMps: Double? = 1.5,
     val failSpeedAccuracyMps: Double? = null,

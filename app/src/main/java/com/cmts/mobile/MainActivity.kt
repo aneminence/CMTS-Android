@@ -222,12 +222,17 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
   val now = frame?.nanos ?: tick
   val gps = samples["phone.gps"]
   val sat = samples["phone.satellites"]
-  fun display(sample: Sample?, index: Int, scale: Double = 1.0, digits: Int = 1) = dashboardValue(
-   if(isFresh(sample, now, frame != null || Live.running)) sample?.values?.getOrNull(index) else null, scale, digits)
-  PeekGauge("速度", display(gps,3,3.6), "km/h", Modifier.fillMaxWidth().weight(1f))
-  PeekGauge("高度", display(gps,2), "m", Modifier.fillMaxWidth().weight(1f))
-  PeekGauge("大气压力", display(samples["phone.pressure"],0), "mbar", Modifier.fillMaxWidth().weight(1f))
-  PeekGauge("卫星 可见 / 定位", "${display(sat,0,digits=0)} / ${display(sat,1,digits=0)}", "颗", Modifier.fillMaxWidth().weight(1f))
+  val live = frame != null || Live.running || Live.serviceAlive
+  val lastGood = remember { mutableStateMapOf<String, String>() }
+  fun display(key: String, sample: Sample?, index: Int, scale: Double = 1.0, digits: Int = 1): String {
+   val raw = dashboardValue(if (isFresh(sample, now, live)) sample?.values?.getOrNull(index) else null, scale, digits)
+   if (raw != "—") lastGood[key] = raw
+   return lastGood[key] ?: raw
+  }
+  PeekGauge("速度", display("spd", gps,3,3.6), "km/h", Modifier.fillMaxWidth().weight(1f))
+  PeekGauge("高度", display("alt", gps,2), "m", Modifier.fillMaxWidth().weight(1f))
+  PeekGauge("大气压力", display("prs", samples["phone.pressure"],0), "mbar", Modifier.fillMaxWidth().weight(1f))
+  PeekGauge("卫星 可见 / 定位", "${display("sv", sat,0,digits=0)} / ${display("su", sat,1,digits=0)}", "颗", Modifier.fillMaxWidth().weight(1f))
   Text(pullHint, color = Color(0xFFD4AF37), style = MaterialTheme.typography.labelSmall, maxLines = 1)
   Text(if(frame != null) "历史回放" else Live.status, style = MaterialTheme.typography.labelSmall, maxLines = 1)
  }
@@ -339,15 +344,21 @@ private fun MainCaptureScreen(
    LaunchedEffect(Unit) { while(true) { summaryClock = SystemClock.elapsedRealtimeNanos(); delay(1000) } }
    val summarySamples = frame?.samples ?: Live.samples
    val summaryNow = frame?.nanos ?: summaryClock
-   fun summary(source: String, index: Int, scale: Double = 1.0, digits: Int = 1): String {
+   val live = frame != null || Live.running || Live.serviceAlive
+   // Hold last good readout so brief GNSS gaps / map identity swaps do not flash to em-dash.
+   val lastGood = remember { mutableStateMapOf<String, String>() }
+   fun summary(key: String, source: String, index: Int, scale: Double = 1.0, digits: Int = 1): String {
     val sample = summarySamples[source]
-    return dashboardValue(if(isFresh(sample, summaryNow, frame != null || Live.running)) sample?.values?.getOrNull(index) else null, scale, digits)
+    val fresh = isFresh(sample, summaryNow, live)
+    val raw = dashboardValue(if (fresh) sample?.values?.getOrNull(index) else null, scale, digits)
+    if (raw != "—") lastGood[key] = raw
+    return lastGood[key] ?: raw
    }
    Row(Modifier.fillMaxWidth().height(64.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-    PeekGauge("速度", summary("phone.gps",3,3.6), "km/h", Modifier.weight(1f).fillMaxHeight())
-    PeekGauge("高度", summary("phone.gps",2), "m", Modifier.weight(1f).fillMaxHeight())
-    PeekGauge("气压", summary("phone.pressure",0), "mbar", Modifier.weight(1f).fillMaxHeight())
-    PeekGauge("可见/定位", "${summary("phone.satellites",0,digits=0)}/${summary("phone.satellites",1,digits=0)}", "颗", Modifier.weight(1f).fillMaxHeight())
+    PeekGauge("速度", summary("spd", "phone.gps",3,3.6), "km/h", Modifier.weight(1f).fillMaxHeight())
+    PeekGauge("高度", summary("alt", "phone.gps",2), "m", Modifier.weight(1f).fillMaxHeight())
+    PeekGauge("气压", summary("prs", "phone.pressure",0), "mbar", Modifier.weight(1f).fillMaxHeight())
+    PeekGauge("可见/定位", "${summary("sv", "phone.satellites",0,digits=0)}/${summary("su", "phone.satellites",1,digits=0)}", "颗", Modifier.weight(1f).fillMaxHeight())
    }
   }
 

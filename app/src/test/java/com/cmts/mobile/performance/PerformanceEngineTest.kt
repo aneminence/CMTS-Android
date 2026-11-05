@@ -358,18 +358,29 @@ class PerformanceEngineTest {
     }
 
     @Test
-    fun watchdogStale_invalidates() {
+    fun watchdogStale_invalidatesWhileRunning() {
         val cfg = PerformanceConfig(
             mode = PerformanceMode.ACCEL_0_TO_X,
             startSpeedKmh = 0.0,
-            endSpeedKmh = 50.0,
+            endSpeedKmh = 100.0,
             zero = zero,
-            quality = QualityConfig(maxSampleAgeNs = 200_000_000L),
+            quality = QualityConfig(maxSampleAgeNs = 200_000_000L, maxSampleGapNs = 5_000_000_000L),
         )
         val engine = PerformanceEngine()
         engine.onEvent(EngineEvent.Arm(cfg))
-        engine.onEvent(EngineEvent.Sample(sample(1, 1_000_000_000L, 0.0, recvOffsetNs = 0)))
-        val snap = engine.onEvent(EngineEvent.Watchdog(1_500_000_000L))
+        // stationary → Ready
+        var t = 1_000_000_000L
+        var seq = 1L
+        repeat(4) {
+            engine.onEvent(EngineEvent.Sample(sample(seq++, t, 0.0, recvOffsetNs = 0)))
+            t += 50_000_000L
+        }
+        // cross launch into Running (end not yet)
+        engine.onEvent(EngineEvent.Sample(sample(seq++, t, 0.1, recvOffsetNs = 0))) // below launch
+        t += 50_000_000L
+        engine.onEvent(EngineEvent.Sample(sample(seq++, t, 1.0, recvOffsetNs = 0))) // above launch ~3.6km/h wait launch is 1km/h=0.278
+        // Actually 1.0 m/s > launch; begin run. End is 100 km/h so still Running.
+        val snap = engine.onEvent(EngineEvent.Watchdog(t + 500_000_000L))
         assertEquals(PerformancePhase.Invalid, snap.phase)
         assertTrue(QualityReason.WATCHDOG_STALE in snap.reasons)
     }
@@ -386,5 +397,44 @@ class PerformanceEngineTest {
             fail("expected require failure")
         } catch (_: IllegalArgumentException) {
         }
+    }
+
+    /** Phone GNSS ~1 Hz must complete with default QualityConfig (regression for self-stop). */
+    @Test
+    fun phoneGnss1Hz_defaultQuality_completes0to60() {
+        val cfg = PerformanceConfig(
+            mode = PerformanceMode.ACCEL_0_TO_X,
+            startSpeedKmh = 0.0,
+            endSpeedKmh = 60.0,
+            zero = zero,
+            // defaults: gap 2.5s / age 3.5s
+        )
+        val dt = 1_000_000_000L // 1 Hz
+        val hold = stationary(0.0, 4, 1_000_000_000L, dt, 1)
+        val t0 = hold.last().sampleTimeNanos + dt
+        // 0→20 m/s over 8 s at 1 Hz; 60 km/h = 16.666 m/s
+        val rampSamples = ramp(0.0, 20.0, 8.0, 1.0, t0, hold.last().sequence + 1)
+        val result = PerformanceEngine().recompute(cfg, hold + rampSamples)
+        assertEquals(PerformancePhase.Completed, result.phase)
+        assertNotNull(result.durationNs)
+        assertTrue(result.durationSeconds()!! > 0.0)
+    }
+
+    @Test
+    fun waitingWatchdogStale_doesNotInvalidate() {
+        val cfg = PerformanceConfig(
+            mode = PerformanceMode.ACCEL_0_TO_X,
+            startSpeedKmh = 0.0,
+            endSpeedKmh = 60.0,
+            zero = zero,
+            quality = QualityConfig(maxSampleAgeNs = 500_000_000L, maxSampleGapNs = 2_500_000_000L),
+        )
+        val eng = PerformanceEngine()
+        eng.onEvent(EngineEvent.Arm(cfg))
+        eng.onEvent(EngineEvent.Sample(sample(1, 1_000_000_000L, 0.0, recvOffsetNs = 0)))
+        val snap = eng.onEvent(EngineEvent.Watchdog(1_000_000_000L + 800_000_000L))
+        assertEquals(PerformancePhase.Armed, snap.phase)
+        assertTrue(snap.reasons.contains(QualityReason.WATCHDOG_STALE) || snap.quality == QualityTier.WARN || snap.quality == QualityTier.PASS)
+        assertTrue(snap.phase != PerformancePhase.Invalid)
     }
 }
