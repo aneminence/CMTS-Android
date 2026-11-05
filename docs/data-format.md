@@ -27,3 +27,9 @@ CSV：sequence 为会话递增序号；source 为 phone.gps / phone.accel / phon
 GPS v1..v7：WGS84 纬度 °、经度 °、Location 高度 m、速度 m/s、航向 °、水平精度 m、垂直精度 m。IMU：phone.accel/gyro 为设备自然坐标；另有 vehicle.accel/gyro/attitude（安装约定：屏幕朝上、顶部朝车头；X前/Y左/Z上）。加速度含重力；CSV 角速度为 rad/s，VBO 为 deg/s。可变列数。固定轴映射不是安装标定，原始 phone.* 仍保留。
 
 显示 Hz 为相邻同源原始时间戳间隔的倒数，并非配置频率或硬件能力保证。UTC 不可用于跨传感器精密同步。原始字节、时间转换误差、设备唯一标识与丢样字段仍待扩展。
+
+## 安装归零与线加速度（显示）
+
+Dashboard 加速度始终显示**去重力线加速度**（车辆坐标）：用 `phone.rotation_vector` 估重力方向并从 `vehicle.accel` 扣除；无旋转矢量时回退用 `vehicle.attitude` 的横滚/俯仰估重力。静止时约 0，转动手机后重力估计会跟随，避免「含重力偏置相减、一转就怪」。
+
+「归零」只对**姿态角 / 陀螺**记安装零点（欧拉角/角速率偏置）；「复位」清除。加速度不再用归零偏置。`samples.csv` 的 `phone.*` / `vehicle.*` 仍写含重力原始加速度；metadata 的 `mountZero*` 记录姿态/陀螺偏置（若已归零）。

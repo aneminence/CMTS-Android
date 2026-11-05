@@ -6,6 +6,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import java.io.File
 import java.text.SimpleDateFormat
@@ -13,10 +14,10 @@ import java.util.Locale
 
 @Composable
 fun RecordsScreen(root: File, busy: Boolean, status: String, imported: VboData?, onBack: () -> Unit,
- onOpen: () -> Unit, onVbo: (File) -> Unit, onZip: (File) -> Unit, onCloseFile: () -> Unit) {
+ onOpen: () -> Unit, onCsv: (File) -> Unit, onReplay: (File) -> Unit, onVbo: (File) -> Unit, onKml: (File) -> Unit, onCloseFile: () -> Unit) {
  var refresh by remember { mutableIntStateOf(0) }
  val sessions = remember(refresh, Live.running) { File(root, "sessions").listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList() }
- Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+ Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
   TextButton(onClick = onBack) { Text("← 返回实时地图") }
   Text("记录与文件", style = MaterialTheme.typography.headlineSmall)
   Button(onClick = onOpen, enabled = !busy) { Text("打开 VBO 文件") }
@@ -37,14 +38,15 @@ fun RecordsScreen(root: File, busy: Boolean, status: String, imported: VboData?,
   TextButton(onClick = { refresh++ }, enabled = !busy) { Text("刷新试验记录") }
   sessions.forEach { session ->
    val closed = File(session, "closed.marker").exists()
-   Card(Modifier.fillMaxWidth()) {
-    Column(Modifier.padding(12.dp)) {
-     Text(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(java.util.Date(session.lastModified())))
-     Text(if(closed) "已保存" else "进行中或意外中断")
-     Row {
-      TextButton(enabled = !busy && !Live.running && closed, onClick = { onVbo(session) }) { Text("导出 VBO") }
-      TextButton(enabled = !busy && !Live.running && closed, onClick = { onZip(session) }) { Text("原始数据 ZIP") }
+   Card(onClick = { onReplay(session) }, enabled = !busy && closed, modifier = Modifier.fillMaxWidth()) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+     Column(Modifier.weight(1f)) {
+      Text(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(java.util.Date(session.lastModified())), style = MaterialTheme.typography.bodySmall)
+      Text(if(closed) "已保存" else "进行中或意外中断", style = MaterialTheme.typography.labelSmall)
      }
+     TextButton(enabled = !busy && !Live.running && closed, onClick = { onVbo(session) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) { Text("VBO") }
+     TextButton(enabled = !busy && !Live.running && closed, onClick = { onKml(session) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) { Text("KML") }
+     TextButton(enabled = !busy && !Live.running && closed, onClick = { onCsv(session) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) { Text("CSV") }
     }
    }
   }

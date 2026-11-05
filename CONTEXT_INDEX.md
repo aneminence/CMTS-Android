@@ -46,3 +46,9 @@ Single index. Prefer the handoff over older docs; do not fork a second encyclope
 
 ## Out of repo
 Windows: `D:\CMTS\Chassis Master Test Suite` (read-only reference).
+
+## 最新交接（2026-11-05）
+最新优先阅读 [性能测试设计与当前进度](docs/GROKBOT_HANDOFF_2026-11-05_PERFORMANCE_PLAN.md)：Note20 Ultra、横竖屏摘要/气压、当前验证边界，以及尚未实现的 Performance Test 架构、算法、质量规则与实施顺序。
+
+优先阅读 [docs/GROKBOT_HANDOFF_2026-11-05.md](docs/GROKBOT_HANDOFF_2026-11-05.md)：USB、锁屏、高德/16KB、地图缓存、KML/CSV、回放和紧凑UI。此前交接作为背景保留。
+

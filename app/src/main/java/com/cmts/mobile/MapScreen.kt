@@ -18,6 +18,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import androidx.compose.ui.graphics.FilterQuality
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
@@ -31,13 +35,18 @@ internal object SatelliteTiles {
 }
 
 @Composable
-fun TrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = null) {
- var center by remember { mutableStateOf(WorldPoint(0.5, 0.5)) }
- var zoom by remember { mutableDoubleStateOf(2.0) }
+fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = null, controlsOnStart: Boolean = false) {
+ val landscape = androidx.compose.ui.platform.LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+ var center by remember { mutableStateOf(project(39.086, 117.314)) }
+ var zoom by remember { mutableDoubleStateOf(13.0) }
  var follow by remember { mutableStateOf(true) }
  var positioned by remember { mutableStateOf(false) }
  var dimensions by remember { mutableStateOf(IntSize.Zero) }
  var tiles by remember { mutableStateOf(mapOf<String, ImageBitmap>()) }
+ val scope = rememberCoroutineScope()
+ val downloads = remember { mutableMapOf<String, Job>() }
+ val permits = remember { Semaphore(4) }
+ val lru = remember { LinkedHashMap<String, ImageBitmap>(160, 0.75f, true) }
  var failed by remember { mutableStateOf(false) }
  var retry by remember { mutableIntStateOf(0) }
  val track = offlineTrack ?: Live.track
@@ -67,33 +76,40 @@ fun TrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = nu
   }
  }
  val keys = visible.map { it.third }.toSet()
+ val currentKeys by rememberUpdatedState(keys)
  LaunchedEffect(keys, retry) {
   failed = false
-  tiles = tiles.filterKeys { it in keys }
+  keys.forEach { lru[it] } // Touch recently viewed tiles; bounded session-only memory cache.
   for (key in keys) {
-   if (tiles.containsKey(key)) continue
-   val bitmap = withContext(Dispatchers.IO) {
+   if (tiles.containsKey(key) || downloads.containsKey(key)) continue
+   downloads[key] = scope.launch {
     try {
-     // Keep only visible tiles in memory. No offline Google imagery storage.
-     val bytes = run {
-      val parts = key.split('/').map { it.toInt() }
-      val connection = URL(SatelliteTiles.url(parts[0], parts[1], parts[2])).openConnection() as HttpURLConnection
-      try {
-       connection.setRequestProperty("User-Agent", "CMTS-Mobile/0.1.0 (Android; com.cmts.mobile)")
-       connection.connectTimeout = 5000; connection.readTimeout = 5000
-       check(connection.responseCode == 200)
-       connection.inputStream.use { it.readBytes() }.also {
-        check(BitmapFactory.decodeByteArray(it, 0, it.size) != null)
+     permits.withPermit {
+      if (key !in currentKeys) return@withPermit
+      val bitmap = withContext(Dispatchers.IO) {
+       try {
+        val parts = key.split('/').map { it.toInt() }
+        val connection = URL(SatelliteTiles.url(parts[0], parts[1], parts[2])).openConnection() as HttpURLConnection
+        try {
+         connection.setRequestProperty("User-Agent", "CMTS-Mobile/0.1.0 (Android; com.cmts.mobile)")
+         connection.connectTimeout = 5000; connection.readTimeout = 5000
+         check(connection.responseCode == 200)
+         connection.inputStream.use { BitmapFactory.decodeStream(it) }?.asImageBitmap()
+        } finally { connection.disconnect() }
+       } catch (e: CancellationException) { throw e }
+       catch (e: Exception) { null }
+      }
+      if (bitmap != null) {
+       lru[key] = bitmap
+       while(lru.size > 160) {
+        val victim = lru.keys.firstOrNull { it !in currentKeys } ?: lru.keys.first()
+        lru.remove(victim)
        }
-      } finally { connection.disconnect() }
+       tiles = lru.toMap()
+      } else if(key in currentKeys) failed = true
      }
-     BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-    } catch (e: Exception) {
-     android.util.Log.w("CMTS.Map", "Tile request failed: ${e.javaClass.simpleName}: ${e.message}")
-     null
-    }
+    } finally { downloads.remove(key) }
    }
-   if (bitmap != null) tiles = tiles + (key to bitmap) else failed = true
   }
  }
  Box(modifier.clipToBounds().background(Color(0xFF20272D))) {
@@ -105,6 +121,18 @@ fun TrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = nu
     zoom = (zoom + ln(scale.toDouble()) / ln(2.0)).coerceIn(1.0, 19.0)
    }
   }) {
+   // Draw cached levels first, spatially aligned, so zoom does not flash blank.
+   for ((key, bitmap) in tiles.entries.sortedBy { it.key.substringBefore('/').toInt() }) {
+    val parts = key.split('/').map { it.toInt() }
+    if(parts[0] == z) continue
+    val n = 1 shl parts[0]
+    val edge = worldSize / n
+    val dx = wrappedDelta((parts[1] + 0.5) / n - center.x) * worldSize + size.width / 2 - edge / 2
+    val dy = parts[2].toDouble() / n * worldSize - top
+    if(dx + edge < 0 || dy + edge < 0 || dx > size.width || dy > size.height) continue
+    drawImage(bitmap, dstOffset = IntOffset(dx.roundToInt(), dy.roundToInt()),
+     dstSize = IntSize(ceil(edge).toInt().coerceAtLeast(1), ceil(edge).toInt().coerceAtLeast(1)), filterQuality = FilterQuality.Low)
+   }
    for ((x, y, key) in visible) {
     val origin = IntOffset((x * tileSize - left).roundToInt(), (y * tileSize - top).roundToInt())
     tiles[key]?.let { drawImage(it, dstOffset = origin, dstSize = IntSize(ceil(tileSize).toInt() + 1, ceil(tileSize).toInt() + 1)) }
@@ -127,22 +155,24 @@ fun TrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = nu
     drawCircle(Color.White, 12f, p); drawCircle(Color(0xFFD4AF37), 8f, p)
    }
   }
-  Column(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp)) {
+  if(!landscape) Column(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp)) {
    Surface(color = Color(0xDD15171C), shape = MaterialTheme.shapes.medium) {
     Column(Modifier.padding(10.dp)) {
      Text("CMTS · 地图", color = Color(0xFFD4AF37))
      Text(SatelliteTiles.attribution, style = MaterialTheme.typography.labelSmall)
-     Text(if (offlineTrack != null) "离线 VBO · WGS84" else if (Live.emulator) "模拟器数据 · 非真机验收" else "手机 GNSS · WGS84", style = MaterialTheme.typography.labelSmall)
-     if (latest == null) Text("开始记录后显示定位与轨迹", style = MaterialTheme.typography.labelSmall)
+     Text(if (offlineTrack != null) "历史轨迹 · WGS84" else if (Live.emulator) "模拟器数据 · 非真机验收" else "手机 GNSS · WGS84", style = MaterialTheme.typography.labelSmall)
+     if (latest == null) Text("暂无 GNSS · 默认浏览天津东丽区", style = MaterialTheme.typography.labelSmall)
      if (failed) Text("底图加载失败，采集不受影响", color = Color(0xFFFFC07A), style = MaterialTheme.typography.labelSmall)
      if (failed) TextButton(onClick = { retry++ }) { Text("重试底图") }
     }
    }
   }
-  Column(Modifier.align(Alignment.CenterEnd).padding(8.dp)) {
-   FilledTonalButton(onClick = { zoom = (zoom + 1).coerceAtMost(19.0) }) { Text("＋") }
-   FilledTonalButton(onClick = { zoom = (zoom - 1).coerceAtLeast(1.0) }) { Text("－") }
-   FilledTonalButton(onClick = { follow = true }, enabled = latest != null) { Text(if (follow) "跟随中" else "回定位") }
+  if(landscape) Text(SatelliteTiles.attribution, modifier = Modifier.align(Alignment.TopCenter).padding(6.dp), color = Color.White, style = MaterialTheme.typography.labelSmall)
+  Column(Modifier.align(if(controlsOnStart) Alignment.TopStart else Alignment.TopEnd).statusBarsPadding().padding(top = 116.dp, start = 12.dp, end = 12.dp), horizontalAlignment = if(controlsOnStart) Alignment.Start else Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+   MapControl(onClick = { zoom = (zoom + 1).coerceAtMost(19.0) }) { Text("＋") }
+   MapControl(onClick = { zoom = (zoom - 1).coerceAtLeast(1.0) }) { Text("－") }
+   MapControl(onClick = { follow = !follow }) { Text(if (follow) "已锁定" else "锁定定位") }
   }
  }
 }
+

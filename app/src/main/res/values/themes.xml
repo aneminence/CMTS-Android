@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+ <style name="Theme.CMTS" parent="@android:style/Theme.Material.NoActionBar">
+  <item name="android:statusBarColor">@android:color/transparent</item>
+  <item name="android:navigationBarColor">@android:color/transparent</item>
+  <item name="android:windowBackground">@color/cmts_black</item>
+ </style>
+ <!-- Cold start: full-bleed splash as window background (visible before first frame). -->
+ <style name="Theme.CMTS.Startup" parent="@android:style/Theme.Material.NoActionBar">
+  <item name="android:windowBackground">@drawable/cmts_splash_window</item>
+  <item name="android:statusBarColor">@color/cmts_splash_bg</item>
+  <item name="android:navigationBarColor">@color/cmts_splash_bg</item>
+  <item name="android:windowFullscreen">true</item>
+ </style>
+</resources>

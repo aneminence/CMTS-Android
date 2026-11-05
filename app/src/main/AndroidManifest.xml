@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
  <uses-permission android:name="android.permission.INTERNET"/>
+ <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
@@ -7,8 +8,17 @@
  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
  <uses-permission android:name="android.permission.WAKE_LOCK"/>
  <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
- <application android:label="CMTS Mobile" android:icon="@drawable/cmts_icon" android:roundIcon="@drawable/cmts_icon" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false">
-  <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+ <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
+ <application android:label="CMTS Mobile" android:icon="@drawable/cmts_icon" android:roundIcon="@drawable/cmts_icon" android:theme="@style/Theme.CMTS" android:allowBackup="false">
+  <meta-data android:name="com.amap.api.v2.apikey" android:value="${AMAP_API_KEY}"/>
+  <activity android:name=".SplashActivity" android:exported="true" android:theme="@style/Theme.CMTS.Startup">
+   <intent-filter>
+    <action android:name="android.intent.action.MAIN"/>
+    <category android:name="android.intent.category.LAUNCHER"/>
+   </intent-filter>
+  </activity>
+  <activity android:name=".MainActivity" android:exported="false" android:theme="@style/Theme.CMTS" android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"/>
+  <activity android:name=".UsbDebugActivity" android:exported="false"/>
   <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="location"/>
  </application>
 </manifest>

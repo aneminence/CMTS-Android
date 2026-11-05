@@ -89,7 +89,7 @@ object Vbo {
    writer.write(utc.format(Instant.ofEpochMilli(millis)) + " " + data.joinToString(" ") { it?.let { number -> String.format(Locale.US, "%.9f", number) } ?: "NaN" } + "\n")
    count++
   } }
-  require(count > 0) { "该记录没有 GNSS 定位数据，无法生成轨迹 VBO；可导出原始数据 ZIP" }
+  require(count > 0) { "该记录没有 GNSS 定位数据，无法生成轨迹 VBO" }
   writer.flush()
   return count
  }
