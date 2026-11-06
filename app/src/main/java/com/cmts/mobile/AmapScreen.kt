@@ -1,5 +1,15 @@
 package com.cmts.mobile
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.*
@@ -21,13 +31,24 @@ import com.amap.api.maps.model.*
 fun TrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = null, controlsOnStart: Boolean = false) {
  val context = LocalContext.current
  val prefs = remember { context.getSharedPreferences("map", 0) }
+ var rgb by remember { mutableStateOf(prefs.getString("trackRgb", "D4AF37") ?: "D4AF37") }
+ val trackColor = android.graphics.Color.parseColor("#" + rgb)
+ var editing by remember { mutableStateOf(false) }
+ if (editing) {
+  TrackColorPicker(trackColor, onDismiss = { editing = false }) { selected ->
+   rgb = "%06X".format(selected and 0xFFFFFF)
+   prefs.edit().putString("trackRgb", rgb).apply()
+   editing = false
+  }
+ }
  var amap by rememberSaveable { mutableStateOf(prefs.getBoolean("amap", false)) }
  var consent by remember { mutableStateOf(prefs.getBoolean("amapConsent", false)) }
  var prompt by remember { mutableStateOf(false) }
  Box(modifier) {
-  if(amap && consent) AmapTrackMap(Modifier.fillMaxSize(), offlineTrack, controlsOnStart) else GoogleTrackMap(Modifier.fillMaxSize(), offlineTrack, controlsOnStart)
+  if(amap && consent) AmapTrackMap(Modifier.fillMaxSize(), offlineTrack, controlsOnStart, trackColor) else GoogleTrackMap(Modifier.fillMaxSize(), offlineTrack, controlsOnStart, androidx.compose.ui.graphics.Color(trackColor))
   val mapBtnAlign = if (controlsOnStart) Alignment.TopStart else Alignment.TopEnd
-  val mapBtnPad = if (controlsOnStart) Modifier.padding(top = 64.dp, start = 12.dp) else Modifier.padding(top = 64.dp, end = 12.dp)
+  MapControl(onClick = { editing = true }, modifier = Modifier.align(mapBtnAlign).statusBarsPadding().padding(top = 64.dp, start = 12.dp, end = 12.dp)) { Text("轨迹色") }
+  val mapBtnPad = if (controlsOnStart) Modifier.padding(top = 116.dp, start = 12.dp) else Modifier.padding(top = 116.dp, end = 12.dp)
   MapControl(onClick = {
    if(!amap && !consent) prompt = true else { amap = !amap; prefs.edit().putBoolean("amap", amap).apply() }
   }, modifier = Modifier.align(mapBtnAlign).statusBarsPadding().then(mapBtnPad)) { Text(if(amap) "卫星" else "高德") }
@@ -41,7 +62,7 @@ fun TrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = nu
 }
 
 @Composable
-private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, controlsOnStart: Boolean) {
+private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, controlsOnStart: Boolean, trackColor: Int) {
  val context = LocalContext.current
  val owner = LocalLifecycleOwner.current
  val view = remember {
@@ -62,10 +83,10 @@ private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, co
   view.map.setOnMapTouchListener { follow = false }
   onDispose { owner.lifecycle.removeObserver(observer); view.onPause(); view.onDestroy() }
  }
- LaunchedEffect(track, follow) {
+ LaunchedEffect(track, follow, trackColor) {
   val points = track.map { CoordinateConverter(context).from(CoordinateConverter.CoordType.GPS).coord(LatLng(it.latitude,it.longitude)).convert() }
   view.map.clear()
-  if(points.size > 1) view.map.addPolyline(PolylineOptions().addAll(points).color(0xFFD4AF37.toInt()).width(5f))
+  if(points.size > 1) view.map.addPolyline(PolylineOptions().addAll(points).color(trackColor).width(5f))
   points.lastOrNull()?.let {
    view.map.addMarker(MarkerOptions().position(it).title("GNSS"))
    if(follow) view.map.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 16f))
@@ -73,7 +94,7 @@ private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, co
  }
  Box(modifier) {
   AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
-  MapControl(onClick = { follow = !follow }, modifier = Modifier.align(if(controlsOnStart) Alignment.TopStart else Alignment.TopEnd).statusBarsPadding().padding(top = 116.dp, start = 12.dp, end = 12.dp)) { Text(if(follow) "已锁定" else "锁定定位") }
+  MapControl(onClick = { follow = !follow }, modifier = Modifier.align(if(controlsOnStart) Alignment.TopStart else Alignment.TopEnd).statusBarsPadding().padding(top = 168.dp, start = 12.dp, end = 12.dp)) { Text(if(follow) "已锁定" else "锁定定位") }
  }
 }
 
@@ -84,4 +105,48 @@ internal fun MapControl(onClick: () -> Unit, modifier: Modifier = Modifier, enab
   shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
   contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
   colors = ButtonDefaults.filledTonalButtonColors(containerColor = androidx.compose.ui.graphics.Color(0xE615171C), contentColor = androidx.compose.ui.graphics.Color(0xFFD4AF37)), content = content)
+}
+
+
+
+private val trackSwatches = listOf(
+ "香槟金" to 0xD4AF37, "橙色" to 0xFF922B, "红色" to 0xF44336, "粉色" to 0xFF77AA,
+ "青色" to 0x26D9D0, "天蓝" to 0x42A5FF, "紫色" to 0xAF87FF, "白色" to 0xFFFFFF,
+ "亮绿" to 0x70DB49, "黄色" to 0xFFEB3B, "深蓝" to 0x244EB8, "黑色" to 0x121212,
+)
+
+@Composable
+private fun TrackColorPicker(initial: Int, onDismiss: () -> Unit, onSave: (Int) -> Unit) {
+ var rgb by rememberSaveable { mutableIntStateOf(initial) }
+ var custom by rememberSaveable { mutableStateOf(false) }
+ AlertDialog(onDismissRequest = onDismiss, title = { Text("轨迹颜色") }, text = {
+  Column(Modifier.verticalScroll(rememberScrollState())) {
+   Canvas(Modifier.fillMaxWidth().height(24.dp)) {
+    drawLine(Color(rgb), androidx.compose.ui.geometry.Offset(0f,center.y),
+     androidx.compose.ui.geometry.Offset(size.width,center.y), 5.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round)
+   }
+   trackSwatches.chunked(4).forEach { row ->
+    Row(Modifier.fillMaxWidth()) {
+     row.forEach { (name, value) ->
+      val color = value or 0xFF000000.toInt()
+      Box(Modifier.weight(1f).height(48.dp).selectable(rgb == color, onClick = { rgb = color })
+       .semantics { contentDescription = name }, contentAlignment = Alignment.Center) {
+       Box(Modifier.size(36.dp).then(if (rgb == color) Modifier.border(2.dp, Color.White, CircleShape) else Modifier)
+        .padding(4.dp).background(Color(color), CircleShape))
+      }
+     }
+    }
+   }
+   TextButton(onClick = { custom = !custom }) { Text(if (custom) "收起微调" else "微调颜色") }
+   if (custom) listOf("红" to 16, "绿" to 8, "蓝" to 0).forEach { (name, shift) ->
+    Row(verticalAlignment = Alignment.CenterVertically) {
+     Text(name)
+     Slider(((rgb ushr shift) and 255).toFloat(), onValueChange = {
+      rgb = (rgb and (255 shl shift).inv()) or (it.toInt() shl shift)
+     }, modifier = Modifier.weight(1f).semantics { contentDescription = name }, valueRange = 0f..255f)
+    }
+   }
+  }
+ }, confirmButton = { TextButton(onClick = { onSave(rgb) }) { Text("保存") } },
+ dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }

@@ -1,4 +1,17 @@
 package com.cmts.mobile
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.progressSemantics
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.contentDescription
+import kotlin.math.roundToInt
+import androidx.compose.ui.draw.clipToBounds
+
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -50,6 +63,33 @@ import java.io.File
 import com.cmts.mobile.performance.PerformanceController
 import com.cmts.mobile.performance.PerformancePane
 class MainActivity : ComponentActivity() {
+ private var previewBound = false
+ private var previewBinder: CaptureService.PreviewBinder? = null
+ private val previewPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+  previewBinder?.refresh()
+ }
+ private val previewConnection = object : android.content.ServiceConnection {
+  override fun onServiceConnected(name: android.content.ComponentName, service: android.os.IBinder) {
+   previewBinder = service as CaptureService.PreviewBinder
+   previewBinder?.refresh()
+  }
+  override fun onServiceDisconnected(name: android.content.ComponentName) { previewBinder = null }
+ }
+ override fun onStart() {
+  super.onStart()
+  previewBound = bindService(Intent(this, CaptureService::class.java), previewConnection, BIND_AUTO_CREATE)
+  val prefs = getSharedPreferences("preview", MODE_PRIVATE)
+  if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && !prefs.getBoolean("requested", false)) {
+   prefs.edit().putBoolean("requested", true).apply()
+   previewPermissions.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+  }
+ }
+ override fun onStop() {
+  if (previewBound) unbindService(previewConnection)
+  previewBound = false
+  previewBinder = null
+  super.onStop()
+ }
  private var filesVisible by mutableStateOf(false)
  private var pendingPerfCapture by mutableStateOf(false)
  private var fileStatus by mutableStateOf("")
@@ -149,10 +189,20 @@ class MainActivity : ComponentActivity() {
   super.onCreate(savedInstanceState); enableEdgeToEdge()
   setContent {
    MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFD4AF37))) {
-    Surface(Modifier.fillMaxSize()) {
+    Surface(Modifier.fillMaxSize().background(Color(0xFF15171C))
+     .safeDrawingPadding().clipToBounds()) {
      if(filesVisible) {
       RecordsScreen(filesDir, busy, fileStatus, imported,
        onBack = { filesVisible = false }, onOpen = { openVbo.launch(arrayOf("*/*")) },
+       onDelete = { session -> job {
+        withContext(Dispatchers.IO) {
+         require(session.canonicalFile.parentFile == File(filesDir, "sessions").canonicalFile && session != Live.activeSession) { "无法删除当前记录" }
+         check(session.deleteRecursively()) { "记录删除失败，请刷新后重试" }
+        }
+        if (replay?.session == session) { playing = false; replay = null; replayIndex = 0 }
+        if (csvSession == session) csvSession = null
+        "已删除记录"
+       } },
        onCsv = { csvSession = it; exportCsv.launch("cmts-${it.name}.csv") }, onReplay = { openReplay(it) }, onVbo = { prepareVbo(it) }, onKml = { prepareKml(it) },
        onCloseFile = { imported = null })
      } else {
@@ -183,27 +233,26 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PageDots(pagerState: PagerState, modifier: Modifier = Modifier) {
+private fun PageDots(pagerState: PagerState, modifier: Modifier = Modifier, vertical: Boolean = false) {
  val scope = rememberCoroutineScope()
- Row(
-  modifier.fillMaxWidth().padding(vertical = 6.dp),
-  horizontalArrangement = Arrangement.Center,
-  verticalAlignment = Alignment.CenterVertically,
- ) {
+ val dots: @Composable () -> Unit = {
   repeat(pagerState.pageCount) { index ->
    val selected = pagerState.currentPage == index
    Box(
     Modifier
-     .padding(horizontal = 5.dp)
+     .clickable { scope.launch { pagerState.animateScrollToPage(index) } }
+     .padding(5.dp)
      .size(if (selected) 9.dp else 7.dp)
      .background(
       color = if (selected) Color(0xFFD4AF37) else Color(0xFF5C5F69),
       shape = CircleShape,
      )
-     .clickable { scope.launch { pagerState.animateScrollToPage(index) } },
+     ,
    )
   }
  }
+ if (vertical) Column(modifier.fillMaxHeight(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) { dots() }
+ else Row(modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.Center) { dots() }
 }
 
 private enum class SidePanelAnchor { Hidden, Peek, Half, Full }
@@ -311,15 +360,25 @@ private fun MainCaptureScreen(
  val panelOnEnd = panelOnEndForRotation(rotation)
  val controlsOnStart = landscape && panelOnEnd
  // Survives rotation via Activity configChanges + rememberSaveable.
- var landscapeExpanded by rememberSaveable { mutableStateOf(true) }
- val sheet = rememberBottomSheetScaffoldState(bottomSheetState = rememberStandardBottomSheetState(skipHiddenState = false))
- // Keep sheetSwipeEnabled always true. Gating on scroll-at-top tore nested scroll mid-gesture
- // (Performance stutter; Dashboard stuck at bottom). Material nested scroll prefers child scroll.
+ var panelAnchor by rememberSaveable { mutableStateOf(SidePanelAnchor.Peek) }
+ val sheet = key(landscape) {
+  val initial = when (panelAnchor) {
+   SidePanelAnchor.Hidden -> SheetValue.Hidden
+   SidePanelAnchor.Peek -> SheetValue.PartiallyExpanded
+   SidePanelAnchor.Half, SidePanelAnchor.Full -> SheetValue.Expanded
+  }
+  rememberBottomSheetScaffoldState(bottomSheetState = rememberStandardBottomSheetState(initialValue = initial, skipHiddenState = false))
+ }
  val scope = rememberCoroutineScope()
- // When returning to portrait, collapsed side panel maps to hidden sheet.
- LaunchedEffect(landscape) {
-  if (!landscape && !landscapeExpanded) {
-   sheet.bottomSheetState.hide()
+ val panelPager = rememberPagerState(pageCount = { if (history == null) 3 else 4 })
+ if (!landscape) {
+  val current = sheet.bottomSheetState.currentValue
+  SideEffect {
+   panelAnchor = when (current) {
+    SheetValue.Hidden -> SidePanelAnchor.Hidden
+    SheetValue.PartiallyExpanded -> SidePanelAnchor.Peek
+    SheetValue.Expanded -> SidePanelAnchor.Full
+   }
   }
  }
  val title = when {
@@ -327,17 +386,14 @@ private fun MainCaptureScreen(
   Live.running -> "记录中 · ${elapsedLabel(Live.startedNanos, now)}"
   else -> "准备记录"
  }
+ val portraitPeekHeight = if (history == null) 228.dp else 288.dp
  @Composable
  fun PortraitPanelBody(fullscreenAction: () -> Unit, expandLabel: String, onToggleExpand: () -> Unit, sheetExpanded: Boolean) {
   // Always request full screen height so Expanded can cover the map. Peek only shows the
   // top compact summary; HorizontalPager exists only when fully Expanded (no half-open swipe).
-  val screenH = LocalConfiguration.current.screenHeightDp.dp
-  val portraitPager = rememberPagerState(pageCount = { 2 })
-  val dashScroll = rememberScrollState()
-  LaunchedEffect(sheetExpanded) {
-   if (!sheetExpanded && portraitPager.currentPage != 0) portraitPager.scrollToPage(0)
-  }
 
+
+  val dashScroll = rememberScrollState()
   @Composable
   fun SummaryGauges() {
    var summaryClock by remember { mutableLongStateOf(SystemClock.elapsedRealtimeNanos()) }
@@ -380,11 +436,11 @@ private fun MainCaptureScreen(
      Spacer(Modifier.weight(1f))
      TextButton(onClick = onExitReplay) { Text("退出回放") }
     }
-    Slider(replayIndex.toFloat(), onValueChange = { onPlaying(false); onReplayIndex(it.toInt()) }, valueRange = 0f..history.frames.lastIndex.coerceAtLeast(1).toFloat(), enabled = history.frames.size > 1)
+    ReplaySeekBar(history, replayIndex, { onPlaying(false) }, onReplayIndex)
    }
    if(history == null) Button(onClick = onToggleRecording, modifier = Modifier.fillMaxWidth()) { Text(if(Live.running) "停止并保存记录" else "开始记录") }
    SummaryGauges()
-   TextButton(onClick = onToggleExpand, modifier = Modifier.fillMaxWidth()) { Text(expandLabel) }
+   if (includeFullDash) TextButton(onClick = onToggleExpand, modifier = Modifier.fillMaxWidth()) { Text(expandLabel) }
    if (includeFullDash) {
     Text(if(history != null) "历史文件 · 非实时数据" else Live.status, style = MaterialTheme.typography.bodySmall)
     TextButton(onClick = onUsbDebug) { Text("USB 设备调试") }
@@ -399,42 +455,40 @@ private fun MainCaptureScreen(
    }
   }
 
+  Box(Modifier.fillMaxSize()) {
   Column(
-   Modifier
-    .fillMaxWidth()
-    .height(screenH)
-    .navigationBarsPadding()
+   Modifier.fillMaxWidth()
+    .then(if (sheetExpanded) Modifier.fillMaxHeight() else Modifier.height(portraitPeekHeight))
     .padding(horizontal = 16.dp),
    verticalArrangement = Arrangement.spacedBy(4.dp)
   ) {
-   if (!sheetExpanded) {
-    // Half-open: fixed summary only — no HorizontalPager / page dots / swipe hints.
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-     Text("Dashboard", style = MaterialTheme.typography.titleMedium, color = Color(0xFFD4AF37), modifier = Modifier.weight(1f))
-     TextButton(onClick = fullscreenAction) { Text("全屏地图 ↓") }
+   Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Text(listOf("Dashboard", "性能测试", "车辆姿态", "回放曲线")[panelPager.currentPage],
+     Modifier.weight(1f), color = Color(0xFFD4AF37), style = MaterialTheme.typography.titleMedium)
+    if (!sheetExpanded) TextButton(onClick = onToggleExpand) { Text("展开 ↑") }
+    TextButton(onClick = fullscreenAction) { Text("全屏地图 ↓") }
+   }
+   val systemConfig = androidx.compose.ui.platform.LocalViewConfiguration.current
+   val pagerConfig = remember(systemConfig) {
+    object : androidx.compose.ui.platform.ViewConfiguration by systemConfig {
+     override val touchSlop = systemConfig.touchSlop * 0.75f
     }
-    PeekOrDashChrome(includeFullDash = false)
-    Spacer(Modifier.weight(1f))
-   } else {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-     Text(
-      if (portraitPager.currentPage == 0) "Dashboard · 左滑性能" else "性能测试 · 右滑仪表",
-      style = MaterialTheme.typography.titleMedium,
-      color = Color(0xFFD4AF37),
-      modifier = Modifier.weight(1f),
-     )
-     TextButton(onClick = fullscreenAction) { Text("全屏地图 ↓") }
-    }
-    HorizontalPager(
-     state = portraitPager,
-     modifier = Modifier.fillMaxWidth().weight(1f),
-     beyondViewportPageCount = 0,
-     key = { it },
-    ) { page ->
-     when (page) {
+   }
+   val pageArea = Modifier.weight(1f)
+   CompositionLocalProvider(androidx.compose.ui.platform.LocalViewConfiguration provides pagerConfig) {
+    HorizontalPager(panelPager, Modifier.fillMaxWidth().then(pageArea), key = { it }) { page ->
+     CompositionLocalProvider(androidx.compose.ui.platform.LocalViewConfiguration provides systemConfig) {
+     if (!sheetExpanded) when (page) {
+      0 -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) { PeekOrDashChrome(false) }
+      1 -> com.cmts.mobile.performance.CompactPerformanceResults(filesDir)
+      2 -> CompactAttitude(frame, horizontal = true)
+      3 -> history?.let { ReplayCurves(it, replayIndex) { index -> onPlaying(false); onReplayIndex(index) } }
+     } else when (page) {
       0 -> Column(Modifier.fillMaxSize().verticalScroll(dashScroll), verticalArrangement = Arrangement.spacedBy(4.dp)) {
        PeekOrDashChrome(includeFullDash = true)
       }
+      2 -> AttitudePane(frame)
+      3 -> history?.let { ReplayCurves(it, replayIndex) { index -> onPlaying(false); onReplayIndex(index) } }
       else -> PerformancePane(
        filesDir = filesDir,
        onEnsureCapture = onEnsurePerformanceCapture,
@@ -444,28 +498,28 @@ private fun MainCaptureScreen(
       )
      }
     }
-    PageDots(portraitPager)
+    }
    }
+   PageDots(panelPager)
+  }
   }
  }
+
  @Composable
  fun LandscapePanelBody(onCollapse: () -> Unit, isFull: Boolean = false) {
   val context = LocalContext.current
   val power = context.getSystemService(android.os.PowerManager::class.java)
   var speedMenu by remember { mutableStateOf(false) }
-  // Chrome + landscape compact grid Dashboard (horizontal browse for extras).
-  Column(
-   Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp),
-   verticalArrangement = Arrangement.spacedBy(if (history != null) 4.dp else 8.dp)
+  Row(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+   PageDots(panelPager, vertical = true)
+   Column(
+   Modifier.weight(1f).fillMaxHeight(),
+   verticalArrangement = Arrangement.spacedBy(4.dp)
   ) {
-   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-    Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1)
-    if(history == null) TextButton(onClick = onToggleRecording) { Text(if(Live.running) "停止保存" else "开始记录") }
-    TextButton(onClick = onUsbDebug) { Text("USB") }
-    TextButton(onClick = onCollapse) { Text(if (panelOnEnd) "收起 →" else "收起 ←") }
-   }
-   if (history != null) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+   BoxWithConstraints(Modifier.fillMaxWidth()) {
+    val inlineReplay = maxWidth >= 480.dp * LocalDensity.current.fontScale.coerceAtLeast(1f)
+    @Composable fun PlaybackActions() {
+     if (history == null) return
      TextButton(onClick = { if (replayIndex == history.frames.lastIndex) onReplayIndex(0); onPlaying(!playing) }) { Text(if (playing) "暂停" else "播放") }
      Box {
       TextButton(onClick = { speedMenu = true }) { Text("${replaySpeed}× ▾") }
@@ -475,44 +529,60 @@ private fun MainCaptureScreen(
        }
       }
      }
-     Spacer(Modifier.weight(1f))
+
      TextButton(onClick = onExitReplay) { Text("退出回放") }
     }
-    Slider(replayIndex.toFloat(), onValueChange = { onPlaying(false); onReplayIndex(it.toInt()) }, valueRange = 0f..history.frames.lastIndex.coerceAtLeast(1).toFloat(), enabled = history.frames.size > 1)
+    Column {
+     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+      Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1)
+      if (history == null && panelPager.currentPage == 2) AttitudeZeroAction()
+      if (history == null) TextButton(onClick = onToggleRecording) { Text(if(Live.running) "停止保存" else "开始记录") }
+      if (inlineReplay) PlaybackActions()
+      TextButton(onClick = onUsbDebug) { Text("USB") }
+      TextButton(onClick = onCollapse) { Text(if (panelOnEnd) "收起 →" else "收起 ←") }
+     }
+     if (history != null && !inlineReplay) Row { PlaybackActions() }
+    }
    }
-   Text("Dashboard ↑ · ↓ 性能测试", color = Color(0xFFD4AF37), style = MaterialTheme.typography.labelSmall)
-   val landscapePager = rememberPagerState(pageCount = { 2 })
+   if (history != null) {
+    ReplaySeekBar(history, replayIndex, { onPlaying(false) }, onReplayIndex)
+   }
+
    // Vertical page switch; Dashboard keeps its own horizontalScroll; Performance scrolls vertically
    // via nested scroll (child consumes first). Side-panel drag stays on the edge handle only.
    VerticalPager(
-    state = landscapePager,
-    modifier = Modifier.fillMaxWidth().weight(1f, fill = true),
+    state = panelPager,
+    modifier = Modifier.fillMaxSize(),
     beyondViewportPageCount = 0,
     key = { it },
    ) { page ->
     when (page) {
      0 -> Box(Modifier.fillMaxSize()) { Dashboard(frame, landscape = true) }
-     else -> PerformancePane(
+     2 -> AttitudePane(frame, landscape = true)
+      3 -> history?.let { ReplayCurves(it, replayIndex) { index -> onPlaying(false); onReplayIndex(index) } }
+      else -> PerformancePane(
       filesDir = filesDir,
       onEnsureCapture = onEnsurePerformanceCapture,
       onReleaseCaptureIfIdle = onReleasePerformanceCaptureIfIdle,
       modifier = Modifier.fillMaxSize(),
+      landscape = true,
       embedded = true,
      )
     }
    }
-   PageDots(landscapePager)
+   }
   }
  }
 
  Box(Modifier.fillMaxSize()) {
   if (!landscape) {
    BottomSheetScaffold(
-    modifier = Modifier.fillMaxSize(), scaffoldState = sheet,
+    modifier = Modifier.fillMaxSize().background(Color(0xFF15171C)), scaffoldState = sheet,
+    sheetDragHandle = null,
     sheetSwipeEnabled = true,
     containerColor = Color.Transparent,
-    sheetShape = if(sheet.bottomSheetState.currentValue == SheetValue.Expanded) androidx.compose.ui.graphics.RectangleShape else BottomSheetDefaults.ExpandedShape,
-    sheetPeekHeight = (if(history != null) 320.dp else 260.dp) + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
+    sheetShape = androidx.compose.ui.graphics.RectangleShape,
+    sheetPeekHeight = portraitPeekHeight,
     sheetContainerColor = Color(0xFF15171C), sheetContentColor = Color(0xFFE7E1E5),
     sheetContent = {
      PortraitPanelBody(
@@ -530,7 +600,12 @@ private fun MainCaptureScreen(
     // Keep map out of status bar (matches landscape safeDrawingPadding). Expanded sheet
     // stops under status insets; without this strip the map peeks as a top seam.
     Box(Modifier.fillMaxSize().background(Color(0xFF15171C))) {
-     TrackMap(Modifier.fillMaxSize().statusBarsPadding(), replayTrack, controlsOnStart = false)
+     TrackMap(Modifier.layout { measurable, bounds ->
+      val visibleHeight = runCatching { sheet.bottomSheetState.requireOffset().toInt() }
+       .getOrDefault(bounds.maxHeight).coerceIn(1, bounds.maxHeight.coerceAtLeast(1))
+      val map = measurable.measure(androidx.compose.ui.unit.Constraints.fixed(bounds.maxWidth, visibleHeight))
+      layout(bounds.maxWidth, bounds.maxHeight) { map.placeRelative(0, 0) }
+     }, replayTrack, controlsOnStart = false)
     }
    }
    if(sheet.bottomSheetState.currentValue != SheetValue.Expanded) {
@@ -544,7 +619,7 @@ private fun MainCaptureScreen(
   } else {
    // Safe area: map + panel both stay out of status/nav bars (no map under system UI).
    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-    TrackMap(Modifier.fillMaxSize(), replayTrack, controlsOnStart = controlsOnStart)
+
     val density = LocalDensity.current
     val panelOnEndNow = panelOnEnd
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -563,7 +638,7 @@ private fun MainCaptureScreen(
      }
      val dragState = remember {
       AnchoredDraggableState(
-       initialValue = if (landscapeExpanded) SidePanelAnchor.Half else SidePanelAnchor.Peek,
+       initialValue = panelAnchor,
        positionalThreshold = { distance -> distance * 0.4f },
        velocityThreshold = { with(density) { 80.dp.toPx() } },
        snapAnimationSpec = tween(220),
@@ -572,19 +647,27 @@ private fun MainCaptureScreen(
      }
      // Must update anchors during composition/SideEffect — not only LaunchedEffect —
      // and never call requireOffset() during composition (crashes before layout).
-     SideEffect { dragState.updateAnchors(anchors, dragState.currentValue) }
-     LaunchedEffect(dragState.currentValue) {
-      landscapeExpanded = dragState.currentValue != SidePanelAnchor.Peek
-     }
-     LaunchedEffect(landscape) {
-      if (landscape) {
-       val target = if (sheet.bottomSheetState.currentValue == SheetValue.Hidden) SidePanelAnchor.Peek else SidePanelAnchor.Half
-       dragState.animateTo(target)
-      }
-     }
+     SideEffect { dragState.updateAnchors(anchors) }
+     val settledAnchor = dragState.settledValue
+     SideEffect { panelAnchor = settledAnchor }
      val atPeek = dragState.currentValue == SidePanelAnchor.Peek
-     val hidden = dragState.currentValue == SidePanelAnchor.Hidden
+     val hidden = dragState.settledValue == SidePanelAnchor.Hidden
      val panelAlign = if (panelOnEndNow) Alignment.CenterEnd else Alignment.CenterStart
+     fun panelWidth(): Int {
+      val fallback = when (dragState.currentValue) {
+       SidePanelAnchor.Hidden -> 0f
+       SidePanelAnchor.Peek -> peekPx
+       SidePanelAnchor.Half -> halfPx
+       SidePanelAnchor.Full -> fullPx
+      }
+      return runCatching { dragState.requireOffset() }.getOrDefault(fallback).toInt().coerceIn(0, maxW.toInt())
+     }
+     TrackMap(Modifier.layout { measurable, bounds ->
+      val covered = panelWidth()
+      val width = (bounds.maxWidth - covered).coerceAtLeast(1)
+      val map = measurable.measure(androidx.compose.ui.unit.Constraints.fixed(width, bounds.maxHeight))
+      layout(bounds.maxWidth, bounds.maxHeight) { map.placeRelative(if (panelOnEndNow) 0 else covered, 0) }
+     }, replayTrack, controlsOnStart = controlsOnStart)
      Surface(
       color = Color(0xFF15171C),
       contentColor = Color(0xFFE7E1E5),
@@ -592,17 +675,7 @@ private fun MainCaptureScreen(
        .align(panelAlign)
        .fillMaxHeight()
        .layout { measurable, constraints ->
-        val fallback = when (dragState.currentValue) {
-         SidePanelAnchor.Hidden -> 0f
-         SidePanelAnchor.Peek -> peekPx
-         SidePanelAnchor.Half -> halfPx
-         SidePanelAnchor.Full -> fullPx
-        }
-        val lo = 0
-        val hi = maxOf(peekPx, fullPx).toInt().coerceAtLeast(lo)
-        val w = runCatching { dragState.requireOffset() }.getOrDefault(fallback)
-         .toInt()
-         .coerceIn(lo, hi)
+        val w = panelWidth()
         val placeable = measurable.measure(
          constraints.copy(minWidth = w, maxWidth = w, minHeight = constraints.maxHeight, maxHeight = constraints.maxHeight)
         )
@@ -625,11 +698,18 @@ private fun MainCaptureScreen(
        }
        Box(Modifier.weight(1f).fillMaxHeight()) {
         if (atPeek) {
-         LandscapePeekChrome(
+         VerticalPager(panelPager, Modifier.fillMaxSize()) { page ->
+          when (page) {
+           1 -> com.cmts.mobile.performance.CompactPerformanceResults(filesDir)
+           2 -> CompactAttitude(frame)
+           3 -> history?.let { ReplayCurves(it, replayIndex) { index -> onPlaying(false); onReplayIndex(index) } }
+           else -> LandscapePeekChrome(
           title = title, frame = frame,
           onStart = onToggleRecording,
-          pullHint = if (panelOnEndNow) "侧拉查看 Dashboard ←" else "侧拉查看 Dashboard →",
+          pullHint = if (panelOnEndNow) "上下翻页 · 侧拉展开 ←" else "上下翻页 · 侧拉展开 →",
          )
+          }
+         }
         } else {
          LandscapePanelBody(
           onCollapse = { scope.launch { dragState.animateTo(SidePanelAnchor.Peek) } },
@@ -668,6 +748,81 @@ private fun MainCaptureScreen(
     }
    }
   }
+ }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@Composable
+private fun ReplaySeekBar(history: ReplayData, index: Int, pause: () -> Unit, seek: (Int) -> Unit) {
+ val end = history.frames.lastIndex
+ var preview by remember(history.session) { mutableStateOf<Int?>(null) }
+ val currentPause by rememberUpdatedState(pause)
+ val currentSeek by rememberUpdatedState(seek)
+ val shown = preview ?: index
+ val fraction = shown.toFloat() / end.coerceAtLeast(1)
+ Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+  Canvas(Modifier.fillMaxSize()
+   .progressSemantics(fraction)
+   .semantics {
+    contentDescription = "回放进度"
+    setProgress { value ->
+     currentPause()
+     currentSeek((value.coerceIn(0f, 1f) * end).roundToInt())
+     true
+    }
+   }
+   .pointerInput(history.session, end) {
+    if (end <= 0) return@pointerInput
+    val inset = 12.dp.toPx()
+    fun target(x: Float) = (((x - inset) / (size.width - 2 * inset).coerceAtLeast(1f))
+     .coerceIn(0f, 1f) * end).roundToInt()
+    try {
+     awaitEachGesture {
+      val down = awaitFirstDown(pass = PointerEventPass.Initial)
+      down.consume()
+      currentPause()
+      preview = target(down.position.x)
+      do {
+       val touch = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+       val next = target(touch.position.x)
+       touch.consume()
+       preview = next
+       if (!touch.pressed) { currentSeek(next); break }
+      } while (true)
+      preview = null
+     }
+    } finally { preview = null }
+   }) {
+   val inset = 12.dp.toPx()
+   val y = size.height * 0.58f
+   val start = Offset(inset, y)
+   val finish = Offset((size.width - inset).coerceAtLeast(inset), y)
+   val thumb = Offset(start.x + (finish.x - start.x) * fraction, y)
+   val gold = Color(0xFFD4AF37)
+   drawLine(Color(0xFF514959), start, finish, 5.dp.toPx())
+   drawLine(gold, start, thumb, 5.dp.toPx())
+   drawCircle(gold, 9.dp.toPx(), thumb)
+  }
+  if (preview != null) Text(elapsedLabel(history.frames.first().nanos, history.frames[shown].nanos),
+   Modifier.align(Alignment.TopCenter), style = MaterialTheme.typography.labelSmall)
  }
 }
 

@@ -4,7 +4,7 @@ val localConfig = Properties().apply { rootProject.file("local.properties").take
 android {
     namespace = "com.cmts.mobile"
     compileSdk = 35
-    defaultConfig { applicationId = "com.cmts.mobile"; minSdk = 26; targetSdk = 35; versionCode = 2; versionName = "0.1.1"; manifestPlaceholders["AMAP_API_KEY"] = localConfig.getProperty("AMAP_API_KEY", "") }
+    defaultConfig { applicationId = "com.cmts.mobile"; minSdk = 26; targetSdk = 35; versionCode = 3; versionName = "0.1.2"; manifestPlaceholders["AMAP_API_KEY"] = localConfig.getProperty("AMAP_API_KEY", "") }
     // AGP 9 debug defaults to v2-only; file-manager sideload on some OEMs needs v1 as well.
     signingConfigs {
         getByName("debug") {

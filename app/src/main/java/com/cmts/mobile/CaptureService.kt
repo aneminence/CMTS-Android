@@ -11,7 +11,8 @@ import java.io.File
 import java.io.BufferedWriter
 import org.json.JSONObject
 
-data class MountZero(
+internal data class MountZero(
+    val basis: MountBasis? = null,
     val enabled: Boolean = false,
     val accel: List<Double> = emptyList(),
     val gyro: List<Double> = emptyList(),
@@ -23,13 +24,14 @@ object Live {
     val emulator = Build.FINGERPRINT.startsWith("generic") || Build.FINGERPRINT.contains("emulator") ||
         Build.MODEL.contains("sdk_gphone") || Build.HARDWARE in listOf("goldfish", "ranchu")
     /** True while a normal recording session is writing samples.csv. */
+    var activeSession by mutableStateOf<File?>(null)
     var running by mutableStateOf(false)
     var status by mutableStateOf("未采集")
     var samples by mutableStateOf(mapOf<String, Sample>())
     var rates by mutableStateOf(mapOf<String, Double?>())
     var track by mutableStateOf(listOf<TrackPoint>())
     var startedNanos by mutableStateOf(0L)
-    var mountZero by mutableStateOf(MountZero())
+    internal var mountZero by mutableStateOf(MountZero())
     /** Service process is alive for recording and/or performance. */
     var serviceAlive by mutableStateOf(false)
 }
@@ -77,7 +79,27 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         }
     }
 
-    override fun onBind(intent: Intent?) = null
+    private var previewVisible = false
+    private var gpsUp = false
+
+    inner class PreviewBinder : Binder() {
+        fun refresh() { handler.post {
+            previewVisible = true
+            try { ensureListeners() } catch (e: Exception) {
+                main.post { Live.status = "预览不可用：${e.message}" }
+            }
+        } }
+    }
+
+    override fun onBind(intent: Intent?): IBinder = PreviewBinder()
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        handler.post {
+            previewVisible = false
+            if (!recordHold && !perfHold) tearDownListeners()
+        }
+        return false
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -149,7 +171,9 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         }
         main.post { Live.status = statusText() }
         if (!recordHold && !perfHold) {
-            tearDownListeners()
+            wake?.let { if (it.isHeld) it.release() }
+            wake = null
+            if (!previewVisible) tearDownListeners()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         } else {
@@ -162,22 +186,21 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             recordHold && perfHold -> append("记录中 + 性能测试")
             recordHold -> append("记录中")
             perfHold -> append("性能测试采集中")
+            previewVisible -> append("实时预览 · 未记录")
             else -> append("未采集")
         }
     }
 
     private fun ensureListeners() {
-        if (listenersUp) return
-        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) !=
+        val permitted = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            throw SecurityException("精确定位权限未授予或已撤销")
+        if (!permitted && (recordHold || perfHold)) throw SecurityException("需要精确定位权限")
+        if ((recordHold || perfHold) && wake == null) {
+            wake = (getSystemService(POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CMTS:capture").apply { acquire() }
         }
-        wake = (getSystemService(POWER_SERVICE) as PowerManager)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CMTS:capture")
-            .apply { acquire() }
         val missing = mutableListOf<String>()
-        for (type in listOf(
+        if (!listenersUp) for (type in listOf(
             Sensor.TYPE_ACCELEROMETER,
             Sensor.TYPE_GYROSCOPE,
             Sensor.TYPE_ROTATION_VECTOR,
@@ -190,20 +213,25 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 missing.add("sensor:$type")
             }
         }
+        listenersUp = true
+        if (permitted && !gpsUp) {
         check(locations.registerGnssStatusCallback(satelliteCallback, handler)) { "无法注册卫星状态回调" }
         locations.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, this, thread.looper)
-        listenersUp = true
+        gpsUp = true
+        }
         main.post {
             Live.status = statusText() + "；缺失=${missing.joinToString().ifEmpty { "无" }}；等待 GNSS"
         }
     }
 
     private fun tearDownListeners() {
+        LaunchCalibration.cancel()
         if (!listenersUp) return
         runCatching { locations.unregisterGnssStatusCallback(satelliteCallback) }
         runCatching { sensors.unregisterListener(this) }
         runCatching { locations.removeUpdates(this) }
         listenersUp = false
+        gpsUp = false
         wake?.let { if (it.isHeld) it.release() }
         wake = null
     }
@@ -219,7 +247,10 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         Live.startedNanos = SystemClock.elapsedRealtimeNanos()
         sequence = 0L
         rates.clear()
-        folder = File(filesDir, "sessions/${java.util.UUID.randomUUID()}").apply { mkdirs() }
+        folder = File(filesDir, "sessions/${java.util.UUID.randomUUID()}").also {
+            Live.activeSession = it
+            check(it.mkdirs()) { "无法创建记录目录" }
+        }
         PerformanceController.bindCaptureSession(folder!!.name)
         File(folder, "metadata.json").writeText(
             JSONObject()
@@ -232,7 +263,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 .put("requestedPressurePeriodUs", 200000)
                 .put("attitude", "phone.attitude: pitch X, roll Y, azimuth -Z, heading accuracy; degrees; Android getOrientation natural device axes; magnetic north; derived TYPE_ROTATION_VECTOR")
                 .put("rotationVector", "phone.rotation_vector: x*sin(theta/2), y*sin(theta/2), z*sin(theta/2), cos(theta/2), heading accuracy radians (negative unavailable); raw Android values")
-                .put("vehicleFrame", "X=device Y (top/forward), Y=-device X (left), Z=device Z (screen outward/up); CSV/phone.* raw with gravity; Dashboard accel shows gravity-removed linear via rotation vector; mountZero is gyro/attitude display bias only")
+                .put("vehicleFrame", "X=device Y (top/forward), Y=-device X (left), Z=device Z (screen outward/up); CSV/phone.* raw with gravity; Dashboard accel shows gravity-removed linear via rotation vector; mountZero rotates live display into calibrated vehicle axes")
                 .put("vehicleAttitude", "vehicle.attitude: roll X, pitch Y, yaw Z degrees; right-handed; roll positive left side up, pitch positive nose down, yaw positive left from magnetic north; Euler singularity at pitch +/-90 deg")
                 .put("gpsValues", "v1 lat, v2 lon, v3 alt, v4 speed m/s, v5 bearing, v6 horiz accuracy m, v7 vertical accuracy m, v8 speed accuracy m/s (API26+ when hasSpeedAccuracy)")
                 .put("status", "incomplete")
@@ -248,6 +279,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     }
 
     private fun stopRecordingSession() {
+        LaunchCalibration.cancel()
         val zeroSnapshot = Live.mountZero
         try {
             writer?.close()
@@ -259,13 +291,17 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                     val meta = JSONObject(metaFile.readText())
                     meta.put("mountZeroEnabled", zeroSnapshot.enabled)
                     if (zeroSnapshot.enabled) {
+                        zeroSnapshot.basis?.let { b ->
+                            fun vector(v: V3) = org.json.JSONArray(listOf(v.x,v.y,v.z))
+                            meta.put("finalMountBasis", org.json.JSONArray(listOf(vector(b.forward),vector(b.left),vector(b.up))))
+                        }
                         meta.put("mountZeroAccel", org.json.JSONArray(zeroSnapshot.accel))
                         meta.put("mountZeroGyro", org.json.JSONArray(zeroSnapshot.gyro))
                         meta.put("mountZeroAttitude", org.json.JSONArray(zeroSnapshot.attitude))
                         meta.put("mountZeroAtElapsedNanos", zeroSnapshot.zeroedAtElapsedNanos)
                         meta.put(
                             "mountZeroNote",
-                            "mountZero is gyro/attitude display bias only; Dashboard accel uses gravity removal from rotation vector/attitude. samples.csv phone.* and vehicle.* remain raw (accel includes gravity).",
+                            "mountZero rotates live display into calibrated vehicle axes; Dashboard accel uses gravity removal from rotation vector/attitude. samples.csv phone.* and vehicle.* remain raw (accel includes gravity).",
                         )
                     }
                     meta.put("status", "closed")
@@ -273,6 +309,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 }
             }
         } finally {
+            Live.activeSession = null
             folder = null
             main.post { Live.running = false }
             if (!perfHold) PerformanceController.bindCaptureSession(null)
@@ -291,7 +328,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
 
     private fun accept(sample: Sample) {
         try {
-            if (filesDir.usableSpace < 10 * 1024 * 1024) error("剩余空间不足 10 MiB")
+            if (recordHold && filesDir.usableSpace < 10 * 1024 * 1024) error("剩余空间不足 10 MiB")
             val labeled = if (Live.emulator) sample.copy(quality = "SIMULATED_${sample.quality}") else sample
             if (recordHold) {
                 writer?.apply {
@@ -302,6 +339,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             }
             val rate = rates.getOrPut(sample.source) { Rate() }.update(sample.nanos)
             latestSamples[sample.source] = labeled
+            if (recordHold || previewVisible) LaunchCalibration.observe(sample,latestSamples)
             if (sample.source == "phone.gps") {
                 val lat = sample.values.getOrNull(0)
                 val lon = sample.values.getOrNull(1)
@@ -451,3 +489,8 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 .putExtra(EXTRA_CLIENT, client)
     }
 }
+
+
+
+
+

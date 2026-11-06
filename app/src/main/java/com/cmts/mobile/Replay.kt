@@ -3,7 +3,7 @@ package com.cmts.mobile
 import java.io.File
 
 data class ReplayFrame(val nanos: Long, val samples: Map<String, Sample>)
-data class ReplayData(val frames: List<ReplayFrame>, val track: List<TrackPoint>)
+data class ReplayData(val session: File, val frames: List<ReplayFrame>, val track: List<TrackPoint>)
 object Replay {
  private var cacheKey: String? = null
  private var cacheData: ReplayData? = null
@@ -53,7 +53,8 @@ object Replay {
   rawLatest.forEach { (source, raw) -> latest[source] = parse(raw) }
   if(lastTime > frames.last().nanos) frames.add(ReplayFrame(lastTime,latest.toMap()))
   progress(100)
-  return ReplayData(frames,track.sortedBy { it.nanos }).also { cacheKey=key; cacheData=it }
+  return ReplayData(session,frames,track.sortedBy { it.nanos }).also { cacheKey=key; cacheData=it }
  }
 }
+
 

@@ -1,5 +1,12 @@
 package com.cmts.mobile
+import androidx.compose.ui.graphics.drawscope.rotate
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import android.os.SystemClock
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -18,7 +25,7 @@ import kotlinx.coroutines.delay
 import java.util.Locale
 
 internal fun dashboardValue(value: Double?, scale: Double = 1.0, digits: Int = 1): String =
-    value?.takeIf { it.isFinite() }?.let { String.format(Locale.US, "%.${digits}f", it * scale) } ?: "—"
+    value?.takeIf { it.isFinite() }?.let { String.format(Locale.US, "%.${digits}f", it * scale).let { text -> if (text == "-0.0") "0.0" else text } } ?: "—"
 
 internal fun isFresh(sample: Sample?, now: Long, live: Boolean): Boolean =
     live && sample != null && now >= sample.nanos && now - sample.nanos <= 3_000_000_000L
@@ -99,8 +106,29 @@ private fun LandscapeGauge(title: String, value: String, unit: String, modifier:
     Text(title, style = MaterialTheme.typography.labelSmall, maxLines = 1)
     Text(unit, style = MaterialTheme.typography.labelSmall, color = Color(0xFFD4AF37), maxLines = 1)
    }
-   Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-    Text(value, fontSize = 24.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+   BoxWithConstraints(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val style = MaterialTheme.typography.bodyLarge.copy(
+     fontWeight = FontWeight.Medium,
+     fontFeatureSettings = "tnum",
+     lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified,
+     letterSpacing = 0.sp,
+    )
+    val display = if (value == "-0.0") "0.0" else value
+    val template = if (display.substringBefore('.').removePrefix("-").length <= 3) "-888.8"
+     else display.map { if (it.isDigit()) '8' else it }.joinToString("")
+    val bounds = constraints
+    val numberSize = remember(template, bounds, style, measurer) {
+     var low = 1
+     var high = 128
+     while (low < high) {
+      val mid = (low + high + 1) / 2
+      val size = measurer.measure(template, style.copy(fontSize = mid.sp), softWrap = false).size
+      if (size.width <= bounds.maxWidth && size.height <= bounds.maxHeight) low = mid else high = mid - 1
+     }
+     low.sp
+    }
+    Text(display, style = style.copy(fontSize = numberSize), softWrap = false, maxLines = 1)
    }
   }
  }
@@ -201,9 +229,11 @@ private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
  val attitudeRaw = samples["vehicle.attitude"]
  val rotationRaw = samples["phone.rotation_vector"]
  val zero = if (replay == null) Live.mountZero else MountZero()
- val accelValues = vehicleLinearAccel(accelRaw?.values, rotationRaw?.values, attitudeRaw?.values)
- val gyroValues = if (zero.enabled) applyMountZeroLinear(gyroRaw?.values ?: emptyList(), zero.gyro) else gyroRaw?.values
- val attitudeValues = if (zero.enabled) applyMountZeroAttitude(attitudeRaw?.values ?: emptyList(), zero.attitude) else attitudeRaw?.values
+ val linear = vehicleLinearAccel(accelRaw?.values, rotationRaw?.values, attitudeRaw?.values)
+ val accelValues = zero.basis?.project(linear) ?: linear
+ val biasedGyro = if (zero.enabled) applyMountZeroLinear(gyroRaw?.values ?: emptyList(), zero.gyro) else gyroRaw?.values
+ val gyroValues = zero.basis?.project(biasedGyro) ?: biasedGyro
+ val attitudeValues = zero.basis?.attitude(attitudeRaw?.values,zero.attitude) ?: if (zero.enabled) applyMountZeroAttitude(attitudeRaw?.values ?: emptyList(), zero.attitude) else attitudeRaw?.values
  val accelFresh = isFresh(accelRaw, now, running) && (
   isFresh(rotationRaw, now, running) || isFresh(attitudeRaw, now, running)
  )
@@ -211,16 +241,15 @@ private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
   dashboardValue(if (isFresh(s, now, running)) values?.getOrNull(index) else null, scale, digits)
  fun value(s: Sample?, index: Int, scale: Double = 1.0, digits: Int = 1) =
   value(s, s?.values, index, scale, digits)
- val canZero = replay == null && Live.running && isFresh(gyroRaw, now, true) && isFresh(attitudeRaw, now, true)
+ val canZero = replay == null && Live.serviceAlive && isFresh(gyroRaw, now, true) && isFresh(attitudeRaw, now, true)
  val zeroHint = when {
   replay != null -> ""
-  !Live.running -> "开始记录后可归零；归零作用于姿态/陀螺显示，CSV 仍写原始值"
   !canZero -> "等待角速度与姿态有当前数据后再归零"
   zero.enabled -> "已归零：姿态/陀螺相对安装零点；加速度始终为去重力线加速度"
   else -> "未归零：姿态相对磁北；加速度为去重力线加速度（静止约 0）"
  }
  val axisHint = if (zero.enabled)
-  "右手正向不变；姿态/陀螺为相对归零（欧拉角简单相减）。加速度用旋转矢量估重力后扣除。"
+  "立装默认屏幕朝车尾，平放默认手机顶部朝前；可直线起步校准车头方向。"
  else
   "右手正向：横滚左侧抬起、俯仰车头向下、偏航向左；磁北为 0°，未归零。加速度已去重力。"
  val attitudeHint = if (!isFresh(attitudeRaw, now, running)) "姿态无当前数据 / 传感器未就绪"
@@ -246,8 +275,8 @@ private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
   alt = value(gps, 2),
   vAcc = value(gps, 6),
   gpsStatus = gpsStatus,
-  accel = List(3) { i -> dashboardValue(if (accelFresh) accelValues?.getOrNull(i) else null, digits = 2) },
-  gyro = List(3) { i -> value(gyroRaw, gyroValues, i, 180.0 / Math.PI, 2) },
+  accel = List(3) { i -> dashboardValue(if (accelFresh) accelValues?.getOrNull(i) else null) },
+  gyro = List(3) { i -> value(gyroRaw, gyroValues, i, 180.0 / Math.PI) },
   attitude = List(3) { i -> value(attitudeRaw, attitudeValues, i) },
   zeroEnabled = zero.enabled,
   canZero = canZero,
@@ -257,20 +286,27 @@ private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
   rates = rates,
   onZero = {
    val snapped = captureMountZero(accelRaw, gyroRaw, attitudeRaw, SystemClock.elapsedRealtimeNanos())
-   if (snapped != null) Live.mountZero = snapped
+   if (snapped != null) { LaunchCalibration.cancel(); Live.mountZero = snapped }
   },
-  onReset = { Live.mountZero = MountZero() },
+  onReset = { LaunchCalibration.cancel(); Live.mountZero = MountZero() },
  )
 }
 
 @Composable
 private fun ZeroButtons(d: DashboardModel) {
+ Column {
+ if(d.zeroEnabled && d.canZero) {
+  OutlinedButton(onClick={ LaunchCalibration.arm(SystemClock.elapsedRealtimeNanos(), Live.samples["phone.gps"]) }) { Text("直线起步标定（可选）") }
+  if(LaunchCalibration.status.isNotEmpty()) Text(LaunchCalibration.status)
+ }
+
  Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
   Button(enabled = d.canZero, onClick = d.onZero, modifier = Modifier.weight(1f)) { Text("归零") }
   OutlinedButton(enabled = d.zeroEnabled, onClick = d.onReset, modifier = Modifier.weight(1f)) { Text("复位") }
  }
 }
 
+}
 @Composable
 private fun GnssCard(d: DashboardModel) {
  Card(Modifier.fillMaxWidth()) {
@@ -299,4 +335,166 @@ internal fun Gauge(title: String, value: String, unit: String, modifier: Modifie
     fontSize = 24.sp, fontWeight = FontWeight.Medium, maxLines = 1)
   }
  }
+}
+@Composable
+internal fun AttitudeZeroAction() {
+ val model = rememberDashboardModel(null)
+ TextButton(onClick = model.onZero, enabled = model.canZero) { Text("归零") }
+}
+
+@Composable
+internal fun AttitudePane(frame: ReplayFrame?, landscape: Boolean = false) {
+ val model = rememberDashboardModel(frame)
+ val angles = model.attitude
+ Column(Modifier.fillMaxSize()) {
+ if (frame == null && !landscape) {
+  TextButton(onClick = model.onZero, enabled = model.canZero, modifier = Modifier.align(Alignment.End).heightIn(min = 32.dp), contentPadding = PaddingValues(horizontal = 12.dp)) { Text("归零") }
+ }
+ if (landscape) {
+  Row(Modifier.fillMaxSize().padding(6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+   for (side in listOf(true, false)) {
+    val reading = angles[if (side) 1 else 0]
+    Card(Modifier.weight(1f).fillMaxHeight(), colors = CardDefaults.cardColors(containerColor = Color(0xFF202227))) {
+     Column(Modifier.fillMaxSize().padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+      Text(if (side) "俯仰 · 左视图" else "侧倾 · 后视图", style = MaterialTheme.typography.labelLarge)
+      AttitudeDial(side, reading, Modifier.weight(1f).fillMaxWidth())
+      Text(if (reading.toFloatOrNull() == null) "—" else "$reading°", color = Color(0xFFD4AF37), fontSize = 23.sp)
+      if (side) GradeReading(reading)
+     }
+    }
+   }
+  }
+ } else
+ Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp),
+  verticalArrangement = Arrangement.spacedBy(12.dp)) {
+  AttitudeCard(true, angles[1])
+  AttitudeCard(false, angles[0])
+ }
+}
+
+}
+@Composable
+private fun AttitudeCard(side: Boolean, reading: String) {
+ val gold = Color(0xFFD4AF37)
+ val angle = reading.toFloatOrNull()
+ Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFF202227))) {
+  Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+   AttitudeDial(side, reading, Modifier.weight(1f).height(136.dp))
+   Column(Modifier.padding(start=12.dp).widthIn(min=82.dp)) {
+    Text(if(side) "俯仰" else "侧倾", style=MaterialTheme.typography.titleMedium)
+    Text(if(side) "左视图" else "后视图", color=Color(0xFFB9B7B0), style=MaterialTheme.typography.labelMedium)
+    Spacer(Modifier.height(8.dp))
+    Text(if(angle==null) "—" else "$reading°", fontSize=27.sp, color=gold)
+    if (side) GradeReading(reading)
+   }
+  }
+ }
+}
+
+
+
+@Composable
+private fun AttitudeDial(side: Boolean, reading: String, modifier: Modifier) {
+ val gold = Color(0xFFD4AF37)
+ val angle = reading.toFloatOrNull()
+ Canvas(modifier) {
+  val unit = minOf(size.width, size.height) / 116f
+  withTransform({
+   translate(center.x, center.y)
+   scale(unit, unit, Offset.Zero)
+  }) {
+   val guide = Color(0xFF525351)
+   drawCircle(guide, 53f, Offset.Zero, style = Stroke(.7f))
+   for (tick in -90..90 step 15) rotate(tick.toFloat(), Offset.Zero) {
+    for (sign in listOf(-1,1)) drawLine(guide, Offset(sign*48f,0f), Offset(sign*53f,0f), 1f)
+   }
+   drawLine(guide, Offset(-55f,0f), Offset(55f,0f), 1f)
+   if (angle != null) rotate(if (side) -angle else angle, Offset.Zero) {
+    val body = Path().apply {
+     if (side) {
+      moveTo(-43f,5f); quadraticTo(-45f,-4f,-38f,-7f); lineTo(-22f,-10f)
+      lineTo(-12f,-21f); quadraticTo(1f,-24f,16f,-20f); lineTo(27f,-10f)
+      lineTo(39f,-8f); quadraticTo(44f,-7f,43f,5f)
+     } else {
+      moveTo(-28f,9f); quadraticTo(-32f,-2f,-27f,-11f); lineTo(-21f,-23f)
+      quadraticTo(0f,-27f,21f,-23f); lineTo(27f,-11f); quadraticTo(32f,-2f,28f,9f)
+     }
+     close()
+    }
+    drawPath(body, Color(0xFF4B483D))
+    drawPath(body, Color(0xFFE3CB8F), style = Stroke(1.5f))
+    val window = Path().apply {
+     moveTo(if(side) -18f else -23f,-10f)
+     lineTo(if(side) -10f else -18f,-19f)
+     lineTo(if(side) 14f else 18f,-19f)
+     lineTo(23f,-10f); close()
+    }
+    drawPath(window, Color(0xFF15191E))
+    if(side) {
+     drawLine(gold,Offset(2f,-20f),Offset(2f,-9f),1.4f)
+     for(x in listOf(-27f,27f)) {
+      drawCircle(Color(0xFF15171B),7f,Offset(x,5f))
+      drawCircle(gold,4f,Offset(x,5f),style=Stroke(1.5f))
+     }
+    } else {
+     for(x in listOf(-25f,14f)) drawRect(Color(0xFFEBA18A),Offset(x,-5f),Size(11f,3f))
+     drawRect(Color(0xFFBDB5A2),Offset(-7f,1f),Size(14f,4f))
+    }
+   }
+  }
+ }
+}
+
+
+
+
+
+@Composable
+internal fun CompactAttitude(frame: ReplayFrame?, horizontal: Boolean = false) {
+ val angles = rememberDashboardModel(frame).attitude
+ if (horizontal) {
+  Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+   for (side in listOf(true, false)) {
+    val angle = angles[if (side) 1 else 0]
+    Card(Modifier.weight(1f).fillMaxHeight()) {
+     Column(Modifier.fillMaxSize().padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+      Text(if (side) "俯仰 · 左视" else "侧倾 · 后视")
+      AttitudeDial(side, angle, Modifier.weight(1f).fillMaxWidth())
+      Text(if (angle == "—") angle else "$angle°")
+     if (side) GradeReading(angle)
+     }
+    }
+   }
+  }
+  return
+ }
+ Column(Modifier.fillMaxSize().padding(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+  Text("车辆姿态", color = Color(0xFFD4AF37))
+  for (side in listOf(true,false)) {
+   val angle = angles[if(side) 1 else 0]
+   Card(Modifier.fillMaxWidth().weight(1f)) {
+    Column(Modifier.fillMaxSize().padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+     Text(if(side) "俯仰 · 左视" else "侧倾 · 后视", style = MaterialTheme.typography.labelSmall)
+     AttitudeDial(side, angle, Modifier.weight(1f).fillMaxWidth())
+     Text(if(angle == "—") angle else "$angle°")
+     if (side) GradeReading(angle)
+    }
+   }
+  }
+ }
+}
+
+
+
+
+
+internal fun gradeLabel(pitch: String): String {
+ val degrees = pitch.toDoubleOrNull()?.takeIf { kotlin.math.abs(it) < 90 } ?: return "—"
+ val percent = -100.0 * kotlin.math.tan(Math.toRadians(degrees))
+ return if (kotlin.math.abs(percent) < 0.05) "0.0%" else String.format(Locale.US, "%+.1f%%", percent)
+}
+
+@Composable
+private fun GradeReading(pitch: String) {
+ Text("坡度 ${gradeLabel(pitch)}", style = MaterialTheme.typography.labelMedium)
 }

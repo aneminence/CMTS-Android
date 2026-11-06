@@ -35,7 +35,7 @@ internal object SatelliteTiles {
 }
 
 @Composable
-fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = null, controlsOnStart: Boolean = false) {
+fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>? = null, controlsOnStart: Boolean = false, trackColor: Color = Color(0xFFD4AF37)) {
  val landscape = androidx.compose.ui.platform.LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
  var center by remember { mutableStateOf(project(39.086, 117.314)) }
  var zoom by remember { mutableDoubleStateOf(13.0) }
@@ -142,7 +142,7 @@ fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>
     return Offset((wrappedDelta(w.x - center.x) * worldSize + size.width / 2).toFloat(), ((w.y - center.y) * worldSize + size.height / 2).toFloat())
    }
    track.zipWithNext().forEach { (a, b) ->
-    if (b.nanos - a.nanos in 1..10_000_000_000L) drawLine(Color(0xFFD4AF37), screen(a), screen(b), 5f)
+    if (b.nanos - a.nanos in 1..10_000_000_000L) drawLine(trackColor, screen(a), screen(b), 5f)
    }
    latest?.let {
     val p = screen(it)
@@ -168,11 +168,15 @@ fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>
    }
   }
   if(landscape) Text(SatelliteTiles.attribution, modifier = Modifier.align(Alignment.TopCenter).padding(6.dp), color = Color.White, style = MaterialTheme.typography.labelSmall)
-  Column(Modifier.align(if(controlsOnStart) Alignment.TopStart else Alignment.TopEnd).statusBarsPadding().padding(top = 116.dp, start = 12.dp, end = 12.dp), horizontalAlignment = if(controlsOnStart) Alignment.Start else Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+  Column(Modifier.align(if(controlsOnStart) Alignment.TopStart else Alignment.TopEnd).statusBarsPadding().padding(top = 168.dp, start = 12.dp, end = 12.dp), horizontalAlignment = if(controlsOnStart) Alignment.Start else Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
    MapControl(onClick = { zoom = (zoom + 1).coerceAtMost(19.0) }) { Text("＋") }
    MapControl(onClick = { zoom = (zoom - 1).coerceAtLeast(1.0) }) { Text("－") }
+
    MapControl(onClick = { follow = !follow }) { Text(if (follow) "已锁定" else "锁定定位") }
   }
  }
 }
+
+
+
 

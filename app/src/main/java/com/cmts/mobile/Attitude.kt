@@ -67,7 +67,7 @@ internal fun captureMountZero(
  val t = triple(attitude) ?: return null
  // Keep accel snapshot only as diagnostics; display does not subtract it.
  val a = triple(accel) ?: emptyList()
- return MountZero(enabled = true, accel = a, gyro = g, attitude = t, zeroedAtElapsedNanos = atNanos)
+ return MountZero(basis = MountBasis.stationary(t), enabled = true, accel = a, gyro = g, attitude = t, zeroedAtElapsedNanos = atNanos)
 }
 
 internal const val STANDARD_GRAVITY = 9.80665
@@ -149,4 +149,5 @@ internal fun vehicleLinearAccel(
   vehicleAccel[2]!! - gravityVehicle[2]
  )
 }
+
 

@@ -12,11 +12,14 @@ class KmlTest {
   val dir = Files.createTempDirectory("kml").toFile()
   try {
    File(dir,"closed.marker").writeText("")
-   File(dir,"samples.csv").writeText("header\n1,phone.gps,1,1,1,provider_reported,39.1,117.3\n2,phone.gps,2,2,2,MOCK,1,2\n3,phone.gps,3,3,3,provider_reported,NaN,117\n4,phone.gps,4,4,4,provider_reported,39.2,117.4\n")
+   File(dir,"samples.csv").writeText("header\n1,phone.gps,1,1,1,provider_reported,39.1,117.3\n2,phone.gps,2,2,2,MOCK,1,2\n3,phone.gps,3,3,3,provider_reported,NaN,117\n4,phone.gps,4,4,4,provider_reported,39.2,117.4,-9.094,4.38,90,2.5\n")
    val out = StringWriter()
    assertEquals(2,Kml.export(dir,out))
    val xml = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(out.toString().byteInputStream())
-   assertEquals("117.3,39.1\n117.4,39.2",xml.getElementsByTagName("coordinates").item(0).textContent.trim())
+   assertEquals("117.3 39.1",xml.getElementsByTagName("gx:coord").item(0).textContent)
+   assertEquals("117.4 39.2 -9.094",xml.getElementsByTagName("gx:coord").item(1).textContent)
+   assertEquals(",;4.38,2.5",xml.getElementsByTagName("value").item(0).textContent)
+   assertEquals("1970-01-01T00:00:00.004Z",xml.getElementsByTagName("when").item(1).textContent)
   } finally { dir.deleteRecursively() }
  }
  @Test fun rejectsImuOnly() {
@@ -27,3 +30,4 @@ class KmlTest {
   } finally { dir.deleteRecursively() }
  }
 }
+

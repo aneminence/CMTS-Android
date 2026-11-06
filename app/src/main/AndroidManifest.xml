@@ -9,7 +9,7 @@
  <uses-permission android:name="android.permission.WAKE_LOCK"/>
  <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
  <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
- <application android:label="CMTS Mobile" android:icon="@drawable/cmts_icon" android:roundIcon="@drawable/cmts_icon" android:theme="@style/Theme.CMTS" android:allowBackup="false">
+ <application android:label="CMTS" android:icon="@drawable/cmts_icon" android:roundIcon="@drawable/cmts_icon" android:theme="@style/Theme.CMTS" android:allowBackup="false">
   <meta-data android:name="com.amap.api.v2.apikey" android:value="${AMAP_API_KEY}"/>
   <activity android:name=".SplashActivity" android:exported="true" android:theme="@style/Theme.CMTS.Startup">
    <intent-filter>
@@ -22,3 +22,4 @@
   <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="location"/>
  </application>
 </manifest>
+
