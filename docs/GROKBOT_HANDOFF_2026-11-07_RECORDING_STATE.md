@@ -1,6 +1,6 @@
-# GROKBOT HANDOFF — 录制状态机对照（2026-11-07）
+﻿# GROKBOT HANDOFF — 录制状态机对照（2026-11-07）
 
-> Android 仓 `D:\CMTS\android`。Windows 仓只读。本稿供跨端无线遥控（P0/P1）对齐用；**不定死 JSON 字段**（等 Win 消息骨架）。
+> Android 仓 `D:\CMTS\android`。Windows 仓只读。本稿管 **RecordingState / 服务侧录制边界**。跨端 **协议 v0.1 SSOT** 见 Win：https://github.com/aneminence/Chassis-Master-Test-Suite/blob/docs/remote-device-p0/docs/remote-device-p0-win.md （分支 `docs/remote-device-p0`）。
 
 ## 1. 目标录制状态（产品）
 
@@ -59,7 +59,7 @@ record.status()  -> { state, recordHold, perfHold, running, activeSession? }
 perf.arm(configs) / perf.cancel()  // 仍走 PerformanceController；Core 持有状态机后可转发
 ```
 
-首版 Win 范围：**手动 IP + 实时订阅 + 录制启停**。性能 Arm 可后置；本轮不写死 JSON。
+首版 Win 范围：**手动 IP + 实时订阅 + 录制启停**。JSON 字段以 Win 协议 v0.1 SSOT 为准，本页不重复。
 
 ## 4. 本提交小改（性能 hold 生命周期）
 
@@ -81,9 +81,9 @@ perf.arm(configs) / perf.cancel()  // 仍走 PerformanceController；Core 持有
 
 ## 6. 与 Win 衔接
 
+- **协议 SSOT（v0.1）**：[remote-device-p0-win.md](https://github.com/aneminence/Chassis-Master-Test-Suite/blob/docs/remote-device-p0/docs/remote-device-p0-win.md)（`8787/cmts/v1`、无 TLS、配对 token、双时间戳、valid/null、seq 进程级、七态 record、RTK→status）。本页不另写 JSON，避免双源。
 - Android：采集执行层；Win：旁路 `CMTSRemoteDataSource`，不改 GSpot 协议。
-- 等 Win P0 消息骨架（sample / record / config）后再定字段。
-- 录制启停应对同一状态机；禁止多控制端重复开写损坏文件（实现待状态机落地后强化）。
+- 录制启停应对同一七态状态机；禁止多控制端重复开写损坏文件（实现待状态机落地后强化）。
 
 ## 7. 验证提示
 
