@@ -84,12 +84,15 @@ class RemoteWsServer(
     fun hasAuthenticatedSubscriber(): Boolean =
         clients.any { it.authenticated && it.subscribed }
 
+    /** Highest maxHz among authenticated subscribers; [defaultHz] if none yet. */
     fun maxSubscriberHz(defaultHz: Int): Int {
-        var hz = defaultHz
+        var hz: Int? = null
         clients.forEach { c ->
-            if (c.authenticated && c.subscribed) hz = maxOf(hz, c.maxHz)
+            if (c.authenticated && c.subscribed) {
+                hz = if (hz == null) c.maxHz else maxOf(hz!!, c.maxHz)
+            }
         }
-        return hz
+        return hz ?: defaultHz
     }
 
     private fun handleSocket(socket: Socket) {

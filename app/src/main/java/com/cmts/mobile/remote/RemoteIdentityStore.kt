@@ -33,9 +33,9 @@ class RemoteIdentityStore(context: Context) {
         }
 
     var maxHz: Int
-        get() = prefs.getInt(KEY_MAX_HZ, DEFAULT_MAX_HZ).coerceIn(1, 50)
+        get() = prefs.getInt(KEY_MAX_HZ, DEFAULT_MAX_HZ).coerceIn(1, RemoteSampleTiming.ABS_MAX_HZ)
         set(value) {
-            prefs.edit().putInt(KEY_MAX_HZ, value.coerceIn(1, 50)).apply()
+            prefs.edit().putInt(KEY_MAX_HZ, value.coerceIn(1, RemoteSampleTiming.ABS_MAX_HZ)).apply()
         }
 
     var remoteEnabled: Boolean
@@ -58,7 +58,7 @@ class RemoteIdentityStore(context: Context) {
         private const val KEY_MAX_HZ = "max_hz"
         private const val KEY_ENABLED = "remote_enabled"
         const val DEFAULT_LABEL = "Phone-01"
-        const val DEFAULT_MAX_HZ = 20
+        const val DEFAULT_MAX_HZ = RemoteSampleTiming.DEFAULT_MAX_HZ
         const val DEFAULT_PORT = 8787
         const val WS_PATH = "/cmts/v1"
         const val PROTO = 1

@@ -31,6 +31,7 @@ object RemoteBridge {
     @Volatile private var wallAnchorMs: Long = 0L
     @Volatile private var elapsedAnchorNanos: Long = 0L
     @Volatile private var lastSampleEmitElapsed: Long = 0L
+    @Volatile private var lastMeasureNanosEmitted: Long = 0L
     @Volatile private var lastStatusEmitMs: Long = 0L
     @Volatile private var remoteHold: Boolean = false
 
@@ -38,13 +39,13 @@ object RemoteBridge {
         override fun run() {
             if (!started.get()) return
             try {
-                maybePublishSample()
+                // Status/hold on main tick. IMU samples are driven by onImuSample().
                 maybePushStatus()
                 syncRemoteHold()
             } catch (e: Exception) {
                 Log.w(TAG, "tick: ${e.message}")
             }
-            main.postDelayed(this, 50L)
+            main.postDelayed(this, 200L)
         }
     }
 
@@ -117,34 +118,55 @@ object RemoteBridge {
         return token
     }
 
-    private fun maybePublishSample() {
+    /**
+     * Called from CaptureService sensor thread on IMU accept.
+     * Throttled by subscribe.maxHz (default ~100). Does not wait for GNSS.
+     */
+    fun onImuSample() {
+        if (!started.get()) return
         val ws = server ?: return
         if (!ws.hasAuthenticatedSubscriber()) return
-        val hz = ws.maxSubscriberHz(store?.maxHz ?: RemoteIdentityStore.DEFAULT_MAX_HZ).coerceIn(1, 50)
-        val nowElapsed = SystemClock.elapsedRealtimeNanos()
-        val minIntervalNs = 1_000_000_000L / hz
-        if (nowElapsed - lastSampleEmitElapsed < minIntervalNs) return
-        lastSampleEmitElapsed = nowElapsed
-        publishCoreSample(ws)
+        try {
+            maybePublishSample(ws)
+        } catch (e: Exception) {
+            Log.w(TAG, "onImuSample: ${e.message}")
+        }
     }
 
-    private fun publishCoreSample(ws: RemoteWsServer) {
-        val idStore = store ?: return
-        val samples = Live.samples
+    private fun maybePublishSample(ws: RemoteWsServer) {
+        val defaultHz = store?.maxHz ?: RemoteSampleTiming.DEFAULT_MAX_HZ
+        val hz = RemoteSampleTiming.clampHz(ws.maxSubscriberHz(defaultHz))
+        val samples = if (Live.remoteSamples.isNotEmpty()) Live.remoteSamples else Live.samples
         val gps = samples["phone.gps"]
         val accel = samples["vehicle.accel"] ?: samples["phone.accel"]
         val gyro = samples["vehicle.gyro"] ?: samples["phone.gyro"]
+        val measureNanos = RemoteSampleTiming.measureNanos(accel?.nanos, gyro?.nanos, gps?.nanos)
+        val nowElapsed = SystemClock.elapsedRealtimeNanos()
+        val lastMeasure = lastMeasureNanosEmitted.takeIf { it > 0L }
+        if (!RemoteSampleTiming.shouldEmit(nowElapsed, lastSampleEmitElapsed, hz, measureNanos, lastMeasure)) {
+            return
+        }
+        lastSampleEmitElapsed = nowElapsed
+        lastMeasureNanosEmitted = measureNanos ?: lastMeasureNanosEmitted
+        publishCoreSample(ws, samples, gps, accel, gyro, measureNanos)
+    }
+
+    private fun publishCoreSample(
+        ws: RemoteWsServer,
+        samples: Map<String, com.cmts.mobile.Sample>,
+        gps: com.cmts.mobile.Sample?,
+        accel: com.cmts.mobile.Sample?,
+        gyro: com.cmts.mobile.Sample?,
+        measureNanos: Long?,
+    ) {
+        val idStore = store ?: return
 
         val gnssValid = gps != null && gps.values.getOrNull(0) != null && gps.values.getOrNull(1) != null
         val speedValid = gps?.values?.getOrNull(3) != null
         val imuValid = accel != null && accel.values.size >= 3
         val headingValid = gps?.values?.getOrNull(4) != null
 
-        val measureNanos = when {
-            gps != null -> gps.nanos
-            accel != null -> accel.nanos
-            else -> null
-        }
+        // IMU-driven: measureTimeMs follows sensor nanos, not GNSS 1 Hz.
         val measureTimeMs = measureNanos?.let { elapsedToUnixMs(it) }
 
         val payload = JSONObject()
@@ -162,7 +184,7 @@ object RemoteBridge {
         RemoteProtocol.putNullable(payload, "yawRateDps", if (gyro != null) yawDps else null)
         RemoteProtocol.putNullable(payload, "lat", if (gnssValid) gps?.values?.getOrNull(0) else null)
         RemoteProtocol.putNullable(payload, "lon", if (gnssValid) gps?.values?.getOrNull(1) else null)
-        RemoteProtocol.putNullable(payload, "altM", gps?.values?.getOrNull(2))
+        RemoteProtocol.putNullable(payload, "altM", if (gnssValid) gps?.values?.getOrNull(2) else null)
         RemoteProtocol.putNullable(payload, "headingDeg", if (headingValid) gps?.values?.getOrNull(4) else null)
         payload.put(
             "valid",
@@ -196,8 +218,9 @@ object RemoteBridge {
     fun pushDeviceStatus() {
         val idStore = store ?: return
         val ws = server ?: return
-        val sat = Live.samples["phone.satellites"]
-        val gps = Live.samples["phone.gps"]
+        val snap = if (Live.remoteSamples.isNotEmpty()) Live.remoteSamples else Live.samples
+        val sat = snap["phone.satellites"]
+        val gps = snap["phone.gps"]
         val payload = JSONObject()
             .put("recordState", RecordingStateMachine.snapshot().name)
             .put("batteryPct", JSONObject.NULL)
@@ -244,7 +267,7 @@ object RemoteBridge {
                 val channels = RemoteProtocol.stringList(payload.optJSONArray("channels"))
                     .ifEmpty { listOf("core") }
                 client.channels = channels.toSet()
-                client.maxHz = payload.optInt("maxHz", idStore.maxHz).coerceIn(1, 50)
+                client.maxHz = RemoteSampleTiming.clampHz(payload.optInt("maxHz", idStore.maxHz))
                 client.subscribed = true
                 syncRemoteHold()
                 client.enqueueControl(

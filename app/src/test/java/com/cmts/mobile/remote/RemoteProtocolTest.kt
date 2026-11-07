@@ -51,3 +51,58 @@ class RemoteProtocolTest {
         assertEquals("manual", RemoteProtocol.payloadOf(msg).getString("mode"))
     }
 }
+
+class RemoteSampleTimingTest {
+    @Test
+    fun measureNanosPrefersImuOverGps() {
+        val m = RemoteSampleTiming.measureNanos(accelNanos = 200L, gyroNanos = 150L, gpsNanos = 50L)
+        assertEquals(200L, m)
+    }
+
+    @Test
+    fun measureNanosFallsBackToGps() {
+        assertEquals(50L, RemoteSampleTiming.measureNanos(null, null, 50L))
+    }
+
+    @Test
+    fun defaultMaxHzIsAbout100() {
+        assertEquals(100, RemoteSampleTiming.DEFAULT_MAX_HZ)
+        assertEquals(100, RemoteSampleTiming.clampHz(500))
+        assertEquals(1, RemoteSampleTiming.clampHz(0))
+    }
+
+    @Test
+    fun shouldEmitRespectsHzAndMeasureAdvance() {
+        val hz = 100
+        assertTrue(
+            RemoteSampleTiming.shouldEmit(
+                nowElapsedNanos = 20_000_000L,
+                lastEmitElapsedNanos = 0L,
+                hz = hz,
+                measureNanos = 10L,
+                lastMeasureNanos = null,
+            ),
+        )
+        // too soon for 100 Hz (<10ms)
+        assertFalse(
+            RemoteSampleTiming.shouldEmit(
+                nowElapsedNanos = 5_000_000L,
+                lastEmitElapsedNanos = 0L,
+                hz = hz,
+                measureNanos = 11L,
+                lastMeasureNanos = 10L,
+            ),
+        )
+        // same measure → skip
+        assertFalse(
+            RemoteSampleTiming.shouldEmit(
+                nowElapsedNanos = 20_000_000L,
+                lastEmitElapsedNanos = 0L,
+                hz = hz,
+                measureNanos = 10L,
+                lastMeasureNanos = 10L,
+            ),
+        )
+    }
+}
+

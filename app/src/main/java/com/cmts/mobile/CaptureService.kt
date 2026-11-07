@@ -7,6 +7,7 @@ import android.location.*
 import android.os.*
 import androidx.compose.runtime.*
 import com.cmts.mobile.performance.PerformanceController
+import com.cmts.mobile.remote.RemoteBridge
 import java.io.File
 import java.io.BufferedWriter
 import org.json.JSONObject
@@ -28,6 +29,11 @@ object Live {
     var running by mutableStateOf(false)
     var status by mutableStateOf("未采集")
     var samples by mutableStateOf(mapOf<String, Sample>())
+    /**
+     * Sensor-rate snapshot for remote WS (not Compose-throttled).
+     * Updated on the capture thread; readers should treat as immutable map swap.
+     */
+    @Volatile var remoteSamples: Map<String, Sample> = emptyMap()
     var rates by mutableStateOf(mapOf<String, Double?>())
     var track by mutableStateOf(listOf<TrackPoint>())
     var startedNanos by mutableStateOf(0L)
@@ -298,6 +304,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         Live.samples = emptyMap()
         Live.rates = emptyMap()
         latestSamples.clear()
+        Live.remoteSamples = emptyMap()
         latestRates.clear()
         lastUiPostNanos = 0L
         Live.track = emptyList()
@@ -405,6 +412,17 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             }
             val rate = rates.getOrPut(sample.source) { Rate() }.update(sample.nanos)
             latestSamples[sample.source] = labeled
+            if (remoteHold) {
+                Live.remoteSamples = latestSamples.toMap()
+                // Drive WS off IMU callbacks; GNSS only refreshes fields / map.
+                if (sample.source == "vehicle.accel" ||
+                    sample.source == "phone.accel" ||
+                    sample.source == "vehicle.gyro" ||
+                    sample.source == "phone.gyro"
+                ) {
+                    RemoteBridge.onImuSample()
+                }
+            }
             if (recordHold || previewVisible) LaunchCalibration.observe(sample,latestSamples)
             if (sample.source == "phone.gps") {
                 val lat = sample.values.getOrNull(0)
