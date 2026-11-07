@@ -62,6 +62,8 @@ import kotlinx.coroutines.*
 import java.io.File
 import com.cmts.mobile.performance.PerformanceController
 import com.cmts.mobile.performance.PerformancePane
+import com.cmts.mobile.remote.RemoteBridge
+import com.cmts.mobile.remote.RemoteIdentityStore
 class MainActivity : ComponentActivity() {
  private var previewBound = false
  private var previewBinder: CaptureService.PreviewBinder? = null
@@ -154,7 +156,7 @@ class MainActivity : ComponentActivity() {
   if(result[Manifest.permission.ACCESS_FINE_LOCATION] == true) { if (pendingPerfCapture) { pendingPerfCapture = false; beginPerformanceCapture() } else beginRecording() } else { pendingPerfCapture = false; Live.status = "需要精确定位授权；未开始采集" }
  }
  private fun beginRecording() {
-  startForegroundService(CaptureService.acquireIntent(this, CaptureService.CLIENT_RECORD))
+  RecordingCommands.start(this)
  }
  private fun beginPerformanceCapture() {
   startForegroundService(CaptureService.acquireIntent(this, CaptureService.CLIENT_PERF))
@@ -172,11 +174,11 @@ class MainActivity : ComponentActivity() {
   "VBO 已生成，请选择保存位置"
  }
  private fun toggleRecording() {
-  if (Live.running) {
+  if (Live.running || RecordingStateMachine.snapshot() == RecordingState.RECORDING) {
    if (PerformanceController.holdCapture) {
     Live.status = "停止记录不会中断进行中的性能测试；仅结束普通录制会话"
    }
-   startService(CaptureService.releaseIntent(this, CaptureService.CLIENT_RECORD))
+   RecordingCommands.stop(this)
   } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
    beginRecording()
   } else {
@@ -187,6 +189,7 @@ class MainActivity : ComponentActivity() {
  @OptIn(ExperimentalMaterial3Api::class)
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState); enableEdgeToEdge()
+  RemoteBridge.start(this)
   setContent {
    MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFD4AF37))) {
     Surface(Modifier.fillMaxSize().background(Color(0xFF15171C))
@@ -443,6 +446,7 @@ private fun MainCaptureScreen(
    if (includeFullDash) TextButton(onClick = onToggleExpand, modifier = Modifier.fillMaxWidth()) { Text(expandLabel) }
    if (includeFullDash) {
     Text(if(history != null) "历史文件 · 非实时数据" else Live.status, style = MaterialTheme.typography.bodySmall)
+    RemoteEndpointRow()
     TextButton(onClick = onUsbDebug) { Text("USB 设备调试") }
     val context = LocalContext.current
     val power = context.getSystemService(android.os.PowerManager::class.java)
@@ -769,6 +773,24 @@ private fun MainCaptureScreen(
 
 
 
+
+@Composable
+private fun RemoteEndpointRow() {
+ val context = LocalContext.current
+ val store = remember { RemoteIdentityStore(context) }
+ var token by remember { mutableStateOf(store.pairingToken) }
+ val deviceId = remember { store.deviceId }
+ val running = RemoteBridge.isRunning()
+ Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+  Text(
+   "远程 WS ${if (running) "开" else "关"} · :${RemoteIdentityStore.DEFAULT_PORT}${RemoteIdentityStore.WS_PATH}",
+   style = MaterialTheme.typography.labelSmall,
+   color = Color(0xFFD4AF37),
+  )
+  Text("deviceId ${deviceId.take(8)}… · token $token", style = MaterialTheme.typography.labelSmall)
+  TextButton(onClick = { token = RemoteBridge.resetToken(context) }) { Text("重置配对码") }
+ }
+}
 
 @Composable
 private fun ReplaySeekBar(history: ReplayData, index: Int, pause: () -> Unit, seek: (Int) -> Unit) {

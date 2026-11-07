@@ -58,6 +58,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     private var listenersUp = false
     private var recordHold = false
     private var perfHold = false
+    private var remoteHold = false
     /** True after PerformanceController.holdCapture observed while CLIENT_PERF held. */
     private var perfSawHold = false
     private var wake: PowerManager.WakeLock? = null
@@ -111,7 +112,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     override fun onUnbind(intent: Intent?): Boolean {
         handler.post {
             previewVisible = false
-            if (!recordHold && !perfHold) tearDownListeners()
+            if (!recordHold && !perfHold && !remoteHold) tearDownListeners()
         }
         return false
     }
@@ -139,8 +140,11 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel("capture", "CMTS 采集", NotificationManager.IMPORTANCE_LOW))
         val title = when {
-            recordHold && perfHold -> "CMTS 记录 + 性能测试"
+            recordHold && (perfHold || remoteHold) -> "CMTS 记录 + 远程/性能"
+            recordHold -> "CMTS 正在记录真实传感器"
+            perfHold && remoteHold -> "CMTS 性能 + 远程流"
             perfHold -> "CMTS 性能测试采集"
+            remoteHold -> "CMTS 远程实时流"
             else -> "CMTS 正在记录真实传感器"
         }
         startForeground(
@@ -162,15 +166,25 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 handler.removeCallbacks(perfHoldWatch)
                 handler.post(perfHoldWatch)
             }
+            CLIENT_REMOTE -> {
+                if (remoteHold) return
+                remoteHold = true
+                RecordingStateMachine.tryTransition(RecordingState.INITIALIZING)
+            }
             else -> {
                 if (recordHold) return
                 recordHold = true
+                RecordingStateMachine.tryTransition(RecordingState.INITIALIZING)
             }
         }
         try {
             ensureForeground()
             ensureListeners()
             if (client == CLIENT_RECORD) startRecordingSession()
+            // Remote / preview / perf alone → READY when listeners up and not recording
+            if (!recordHold && (remoteHold || perfHold || previewVisible)) {
+                RecordingStateMachine.tryTransition(RecordingState.READY)
+            }
             main.post {
                 Live.status = statusText()
             }
@@ -186,38 +200,55 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 perfHold = false
                 perfSawHold = false
             }
+            CLIENT_REMOTE -> {
+                remoteHold = false
+            }
             else -> {
                 if (recordHold) stopRecordingSession()
                 recordHold = false
             }
         }
         main.post { Live.status = statusText() }
-        if (!recordHold && !perfHold) {
+        if (!recordHold && !perfHold && !remoteHold) {
             wake?.let { if (it.isHeld) it.release() }
             wake = null
-            if (!previewVisible) tearDownListeners()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            if (!previewVisible) {
+                tearDownListeners()
+                RecordingStateMachine.tryTransition(RecordingState.IDLE)
+            } else {
+                RecordingStateMachine.tryTransition(RecordingState.READY)
+            }
+            if (!previewVisible) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } else {
+                // Keep process for preview bind; drop FGS if nothing held
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            }
         } else {
+            if (!recordHold) RecordingStateMachine.tryTransition(RecordingState.READY)
             ensureForeground()
         }
     }
 
     private fun statusText(): String = buildString {
         when {
-            recordHold && perfHold -> append("记录中 + 性能测试")
+            recordHold && (perfHold || remoteHold) -> append("记录中 + 远程/性能")
             recordHold -> append("记录中")
+            perfHold && remoteHold -> append("性能测试 + 远程流")
             perfHold -> append("性能测试采集中")
+            remoteHold -> append("远程实时流")
             previewVisible -> append("实时预览 · 未记录")
             else -> append("未采集")
         }
+        append(" · ").append(RecordingStateMachine.snapshot().name)
     }
 
     private fun ensureListeners() {
         val permitted = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (!permitted && (recordHold || perfHold)) throw SecurityException("需要精确定位权限")
-        if ((recordHold || perfHold) && wake == null) {
+        if (!permitted && (recordHold || perfHold || remoteHold)) throw SecurityException("需要精确定位权限")
+        if ((recordHold || perfHold || remoteHold) && wake == null) {
             wake = (getSystemService(POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CMTS:capture").apply { acquire() }
         }
@@ -259,7 +290,11 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     }
 
     private fun startRecordingSession() {
-        if (Live.running) return
+        if (Live.running) {
+            RecordingStateMachine.tryTransition(RecordingState.RECORDING)
+            return
+        }
+        RecordingStateMachine.tryTransition(RecordingState.INITIALIZING)
         Live.samples = emptyMap()
         Live.rates = emptyMap()
         latestSamples.clear()
@@ -297,11 +332,15 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             write("sequence,source,sample_elapsed_ns,callback_elapsed_ns,utc_ms,quality,v1,v2,v3,v4,v5,v6,v7,v8\n")
             flush()
         }
+        RecordingStateMachine.markSession(folder!!.name, System.currentTimeMillis())
+        RecordingStateMachine.tryTransition(RecordingState.RECORDING)
         main.post { Live.running = true }
     }
 
     private fun stopRecordingSession() {
         LaunchCalibration.cancel()
+        RecordingStateMachine.tryTransition(RecordingState.STOPPING)
+        RecordingStateMachine.tryTransition(RecordingState.SAVING)
         val zeroSnapshot = Live.mountZero
         try {
             writer?.close()
@@ -333,17 +372,22 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         } finally {
             Live.activeSession = null
             folder = null
+            RecordingStateMachine.markSession(null, null)
+            val next = if (perfHold || remoteHold || previewVisible) RecordingState.READY else RecordingState.IDLE
+            RecordingStateMachine.tryTransition(next)
             main.post { Live.running = false }
             if (!perfHold) PerformanceController.bindCaptureSession(null)
         }
     }
 
     private fun fail(e: Exception) {
+        RecordingStateMachine.force(RecordingState.ERROR, "${e.javaClass.simpleName}: ${e.message}")
         main.post {
             Live.status = "采集失败：${e.javaClass.simpleName}: ${e.message}"
         }
         recordHold = false
         perfHold = false
+        remoteHold = false
         tearDownListeners()
         stopSelf()
     }
@@ -489,6 +533,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         }
         Live.running = false
         Live.serviceAlive = false
+        RecordingStateMachine.force(RecordingState.IDLE)
         super.onDestroy()
     }
 
@@ -499,6 +544,8 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         const val ACTION_RELEASE = "release"
         const val CLIENT_RECORD = "record"
         const val CLIENT_PERF = "perf"
+        /** Remote WS subscriber hold: sensors on, no session CSV. */
+        const val CLIENT_REMOTE = "remote"
 
         fun acquireIntent(context: android.content.Context, client: String): Intent =
             Intent(context, CaptureService::class.java)
