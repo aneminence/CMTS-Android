@@ -58,7 +58,22 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     private var listenersUp = false
     private var recordHold = false
     private var perfHold = false
+    /** True after PerformanceController.holdCapture observed while CLIENT_PERF held. */
+    private var perfSawHold = false
     private var wake: PowerManager.WakeLock? = null
+    private val perfHoldWatch = object : Runnable {
+        override fun run() {
+            if (!perfHold) return
+            if (PerformanceController.holdCapture) {
+                perfSawHold = true
+            } else if (perfSawHold) {
+                // Hold ended (finish/cancel) while page may already be disposed — release here.
+                releaseClient(CLIENT_PERF)
+                return
+            }
+            handler.postDelayed(this, 250L)
+        }
+    }
     private val satelliteCallback = object : GnssStatus.Callback() {
         override fun onSatelliteStatusChanged(status: GnssStatus) {
             accept(
@@ -143,6 +158,9 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             CLIENT_PERF -> {
                 if (perfHold) return
                 perfHold = true
+                perfSawHold = PerformanceController.holdCapture
+                handler.removeCallbacks(perfHoldWatch)
+                handler.post(perfHoldWatch)
             }
             else -> {
                 if (recordHold) return
@@ -163,7 +181,11 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
 
     private fun releaseClient(client: String) {
         when (client) {
-            CLIENT_PERF -> perfHold = false
+            CLIENT_PERF -> {
+                handler.removeCallbacks(perfHoldWatch)
+                perfHold = false
+                perfSawHold = false
+            }
             else -> {
                 if (recordHold) stopRecordingSession()
                 recordHold = false

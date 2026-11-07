@@ -19,7 +19,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cmts.mobile.Live
-import kotlinx.coroutines.delay
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -70,20 +69,6 @@ fun PerformancePane(
     var showHistory by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<AttemptSummary?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-
-    var wasHolding by remember { mutableStateOf(false) }
-    LaunchedEffect(PerformanceController.holdCapture) {
-        if (PerformanceController.holdCapture) {
-            wasHolding = true
-            while (PerformanceController.holdCapture) {
-                PerformanceController.watchdogTick()
-                delay(250)
-            }
-        } else if (wasHolding) {
-            onReleaseCaptureIfIdle()
-            wasHolding = false
-        }
-    }
 
     if (showHistory) {
         PerformanceHistoryPane(

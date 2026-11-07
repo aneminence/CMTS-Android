@@ -34,6 +34,15 @@ object PerformanceController {
     private val lock = Any()
     private val sampleSeq = AtomicLong(0)
     private val armed = AtomicBoolean(false)
+    /** 250 ms watchdog owned here so VerticalPager dispose cannot stop timeouts. */
+    private val watchdogHandler = Handler(Looper.getMainLooper())
+    private val watchdogRunnable = object : Runnable {
+        override fun run() {
+            if (!armed.get()) return
+            watchdogTick()
+            if (armed.get()) watchdogHandler.postDelayed(this, 250L)
+        }
+    }
 
     private data class LiveSegment(
         val config: PerformanceConfig,
@@ -220,6 +229,8 @@ object PerformanceController {
         sessionResults = emptyList()
         armed.set(true)
         holdCapture = true
+        watchdogHandler.removeCallbacks(watchdogRunnable)
+        watchdogHandler.post(watchdogRunnable)
         synchronized(lock) { publishLocked() }
         val labels = configs.joinToString { "${it.mode.shortLabel()} ${trim(it.startSpeedKmh)}→${trim(it.endSpeedKmh)}" }
         publishMessage("已待命 · ${configs.size} 段：$labels")
@@ -299,6 +310,7 @@ object PerformanceController {
     }
 
     private fun releaseLocked(msg: String) {
+        watchdogHandler.removeCallbacks(watchdogRunnable)
         armed.set(false)
         holdCapture = false
         segments = emptyList()
