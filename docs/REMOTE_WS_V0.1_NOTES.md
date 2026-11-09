@@ -38,6 +38,41 @@ Win should split host/port/path from the URI and the `token` query; remember las
 ```
 5. Expect `stream.sample` with `seq` monotonic and `measureTimeMs` stepping much faster than 1 Hz when phone is moving; `record.start` / `record.stop` return `record.status`.
 
+## stream.sample payload (full Live snapshot)
+
+Emitted at IMU cadence (throttled by `maxHz`). Typed **core** fields stay for Win backward compat; richer Live sources are added **alongside** as nested objects (Win flattens to `source.component`).
+
+### Core (always present; null when invalid — never silent 0)
+
+| key | meaning | unit |
+|---|---|---|
+| `seq` | process-monotonic | — |
+| `measureTimeMs` | IMU elapsed→wall | ms |
+| `receiveTimeMs` | phone wall clock | ms |
+| `vehicleLabel` | device label | — |
+| `speedKph` | from `phone.gps[3]*3.6` | km/h |
+| `ax`/`ay`/`az` | preferred `vehicle.accel` else `phone.accel` | m/s² (incl. gravity) |
+| `yawRateDps` | preferred vehicle/phone gyro Z | **deg/s** (converted) |
+| `lat`/`lon`/`altM`/`headingDeg` | from `phone.gps` | ° / m / ° |
+| `valid.{gnss,speed,imu,heading}` | gates | bool |
+
+### Nested Live sources (omit key if source absent)
+
+| key | components | unit / notes |
+|---|---|---|
+| `phone.accel` | x,y,z | m/s², device axes, incl. gravity |
+| `vehicle.accel` | x,y,z | m/s², vehicle axes (X fwd / Y left / Z up), incl. gravity |
+| `phone.gyro` | x,y,z | **rad/s**, device axes (as stored in CSV) |
+| `vehicle.gyro` | x,y,z | **rad/s**, vehicle axes |
+| `vehicle.attitude` | roll,pitch,yaw | **deg**, vehicle Euler |
+| `phone.attitude` | pitch,roll,azimuth,headingAcc | **deg**, Android getOrientation natural axes |
+| `phone.rotation_vector` | x,y,z,w,headingAcc | raw Android RV; headingAcc **rad** (neg/unavailable → null) |
+| `phone.pressure` | scalar | **mbar** |
+| `phone.satellites` | visible,used | count |
+| `phone.gps` | lat,lon,alt,speed,bearing,horizAcc,vertAcc,speedAcc | °,°,m,**m/s**,°,m,m,m/s |
+
+`device.status` still carries `satellitesVisible` / `satellitesUsed` for early Available registration.
+
 ## Holds
 - `CLIENT_RECORD` — CSV session (UI + remote share RecordingCommands)
 - `CLIENT_REMOTE` — sensors for WS subscribers without CSV

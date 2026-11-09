@@ -161,38 +161,18 @@ object RemoteBridge {
     ) {
         val idStore = store ?: return
 
-        val gnssValid = gps != null && gps.values.getOrNull(0) != null && gps.values.getOrNull(1) != null
-        val speedValid = gps?.values?.getOrNull(3) != null
-        val imuValid = accel != null && accel.values.size >= 3
-        val headingValid = gps?.values?.getOrNull(4) != null
-
         // IMU-driven: measureTimeMs follows sensor nanos, not GNSS 1 Hz.
         val measureTimeMs = measureNanos?.let { elapsedToUnixMs(it) }
 
-        val payload = JSONObject()
-        payload.put("seq", seq.getAndIncrement())
-        RemoteProtocol.putNullableLong(payload, "measureTimeMs", measureTimeMs)
-        payload.put("receiveTimeMs", System.currentTimeMillis())
-        payload.put("vehicleLabel", idStore.deviceLabel)
-
-        val speedKph = gps?.values?.getOrNull(3)?.times(3.6)
-        RemoteProtocol.putNullable(payload, "speedKph", if (speedValid) speedKph else null)
-        RemoteProtocol.putNullable(payload, "ax", if (imuValid) accel?.values?.getOrNull(0) else null)
-        RemoteProtocol.putNullable(payload, "ay", if (imuValid) accel?.values?.getOrNull(1) else null)
-        RemoteProtocol.putNullable(payload, "az", if (imuValid) accel?.values?.getOrNull(2) else null)
-        val yawDps = gyro?.values?.getOrNull(2)?.let { Math.toDegrees(it) }
-        RemoteProtocol.putNullable(payload, "yawRateDps", if (gyro != null) yawDps else null)
-        RemoteProtocol.putNullable(payload, "lat", if (gnssValid) gps?.values?.getOrNull(0) else null)
-        RemoteProtocol.putNullable(payload, "lon", if (gnssValid) gps?.values?.getOrNull(1) else null)
-        RemoteProtocol.putNullable(payload, "altM", if (gnssValid) gps?.values?.getOrNull(2) else null)
-        RemoteProtocol.putNullable(payload, "headingDeg", if (headingValid) gps?.values?.getOrNull(4) else null)
-        payload.put(
-            "valid",
-            JSONObject()
-                .put("gnss", gnssValid)
-                .put("speed", speedValid)
-                .put("imu", imuValid)
-                .put("heading", headingValid),
+        val payload = RemoteSamplePayload.build(
+            seq = seq.getAndIncrement(),
+            measureTimeMs = measureTimeMs,
+            receiveTimeMs = System.currentTimeMillis(),
+            vehicleLabel = idStore.deviceLabel,
+            samples = samples,
+            gps = gps,
+            accel = accel,
+            gyro = gyro,
         )
 
         val msg = RemoteProtocol.envelope(
