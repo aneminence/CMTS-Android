@@ -13,8 +13,12 @@ import kotlin.math.roundToInt
 import androidx.compose.ui.draw.clipToBounds
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.widget.Toast
 import android.content.res.Configuration
 import android.os.Bundle
 import android.os.SystemClock
@@ -781,14 +785,26 @@ private fun RemoteEndpointRow() {
  var token by remember { mutableStateOf(store.pairingToken) }
  val deviceId = remember { store.deviceId }
  val running = RemoteBridge.isRunning()
+ fun copyToken() {
+  val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+  cm.setPrimaryClip(ClipData.newPlainText("cmts-pairing-token", token))
+  Toast.makeText(context, "已复制 token", Toast.LENGTH_SHORT).show()
+ }
  Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
   Text(
    "远程 WS ${if (running) "开" else "关"} · :${RemoteIdentityStore.DEFAULT_PORT}${RemoteIdentityStore.WS_PATH}",
    style = MaterialTheme.typography.labelSmall,
    color = Color(0xFFD4AF37),
   )
-  Text("deviceId ${deviceId.take(8)}… · token $token", style = MaterialTheme.typography.labelSmall)
-  TextButton(onClick = { token = RemoteBridge.resetToken(context) }) { Text("重置配对码") }
+  Text(
+   "deviceId ${deviceId.take(8)}… · token $token",
+   style = MaterialTheme.typography.labelSmall,
+   modifier = Modifier.clickable(onClick = { copyToken() }),
+  )
+  Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+   TextButton(onClick = { copyToken() }) { Text("复制 token") }
+   TextButton(onClick = { token = RemoteBridge.resetToken(context) }) { Text("重置配对码") }
+  }
  }
 }
 
