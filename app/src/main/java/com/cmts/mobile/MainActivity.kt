@@ -68,6 +68,7 @@ import com.cmts.mobile.performance.PerformanceController
 import com.cmts.mobile.performance.PerformancePane
 import com.cmts.mobile.remote.RemoteBridge
 import com.cmts.mobile.remote.RemoteIdentityStore
+import com.cmts.mobile.remote.LocalIpv4
 class MainActivity : ComponentActivity() {
  private var previewBound = false
  private var previewBinder: CaptureService.PreviewBinder? = null
@@ -790,6 +791,17 @@ private fun RemoteEndpointRow() {
   cm.setPrimaryClip(ClipData.newPlainText("cmts-pairing-token", token))
   Toast.makeText(context, "已复制 token", Toast.LENGTH_SHORT).show()
  }
+ fun copyConnectionString() {
+  val ip = LocalIpv4.resolvePreferred()
+  if (ip == null) {
+   Toast.makeText(context, "无可用局域网 IP，请先连 Wi-Fi", Toast.LENGTH_SHORT).show()
+   return
+  }
+  val uri = LocalIpv4.buildPairingUri(ip, token)
+  val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+  cm.setPrimaryClip(ClipData.newPlainText("cmts-pairing-uri", uri))
+  Toast.makeText(context, "已复制连接串", Toast.LENGTH_SHORT).show()
+ }
  Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
   Text(
    "远程 WS ${if (running) "开" else "关"} · :${RemoteIdentityStore.DEFAULT_PORT}${RemoteIdentityStore.WS_PATH}",
@@ -799,15 +811,15 @@ private fun RemoteEndpointRow() {
   Text(
    "deviceId ${deviceId.take(8)}… · token $token",
    style = MaterialTheme.typography.labelSmall,
-   modifier = Modifier.clickable(onClick = { copyToken() }),
+   modifier = Modifier.clickable(onClick = { copyConnectionString() }),
   )
   Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+   TextButton(onClick = { copyConnectionString() }) { Text("复制连接串") }
    TextButton(onClick = { copyToken() }) { Text("复制 token") }
    TextButton(onClick = { token = RemoteBridge.resetToken(context) }) { Text("重置配对码") }
   }
  }
 }
-
 @Composable
 private fun ReplaySeekBar(history: ReplayData, index: Int, pause: () -> Unit, seek: (Int) -> Unit) {
  val end = history.frames.lastIndex

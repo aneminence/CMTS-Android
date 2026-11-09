@@ -5,6 +5,17 @@ Protocol SSOT: https://github.com/aneminence/Chassis-Master-Test-Suite/blob/docs
 ## Endpoint
 `ws://<phone-lan-ip>:8787/cmts/v1` (no TLS)
 
+## Pairing paste string
+Phone UI **复制连接串** copies one line for Win paste-parse:
+
+```
+cmts://<ipv4>:8787/cmts/v1?token=<pairingToken>
+```
+
+Example: `cmts://10.11.6.214:8787/cmts/v1?token=72e3a38515d0`
+
+Win should split host/port/path from the URI and the `token` query; remember last successful values and only re-prompt when connect fails. Token-only copy remains available. IPv4 prefers `wlan*`, skips loopback; if no usable LAN IP, phone shows Toast and copies nothing.
+
 ## Sample rate (IMU vs GNSS)
 - **IMU drives `stream.sample`**: emitted from sensor callbacks (accel/gyro), not GNSS `onLocationChanged`.
 - **GNSS fields ride along** on those samples (last fix); `valid.gnss` / null when missing. Do not invent zeros.
