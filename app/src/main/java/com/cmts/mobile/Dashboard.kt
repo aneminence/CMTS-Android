@@ -231,10 +231,10 @@ private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
  val rotationRaw = samples["phone.rotation_vector"]
  val zero = if (replay == null) Live.mountZero else MountZero()
  val linear = vehicleLinearAccel(accelRaw?.values, rotationRaw?.values, attitudeRaw?.values)
- val accelValues = zero.basis?.project(linear) ?: linear
- val biasedGyro = if (zero.enabled) applyMountZeroLinear(gyroRaw?.values ?: emptyList(), zero.gyro) else gyroRaw?.values
- val gyroValues = zero.basis?.project(biasedGyro) ?: biasedGyro
- val attitudeValues = zero.basis?.attitude(attitudeRaw?.values,zero.attitude) ?: if (zero.enabled) applyMountZeroAttitude(attitudeRaw?.values ?: emptyList(), zero.attitude) else attitudeRaw?.values
+ val zeroed = if (zero.enabled) applyEnabledMountZero(zero, accelRaw?.values, gyroRaw?.values, attitudeRaw?.values, rotationRaw?.values) else null
+ val accelValues = zeroed?.accel ?: linear
+ val gyroValues = zeroed?.gyro ?: gyroRaw?.values
+ val attitudeValues = zeroed?.attitude ?: attitudeRaw?.values
  val accelFresh = isFresh(accelRaw, now, running) && (
   isFresh(rotationRaw, now, running) || isFresh(attitudeRaw, now, running)
  )

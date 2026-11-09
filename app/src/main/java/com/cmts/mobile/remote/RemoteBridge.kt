@@ -135,7 +135,8 @@ object RemoteBridge {
 
     /**
      * Explicit zero/clear signal for Win plot buffers.
-     * Samples stay raw; Win clears curves on this control frame (not on sample values alone).
+     * Win clears curves on this control frame. Subsequent stream.sample vehicle.* /
+     * core ax,ay,az,yawRateDps follow Dashboard mount-zero transform while enabled.
      *
      * type: stream.reset
      * payload: {
@@ -207,6 +208,7 @@ object RemoteBridge {
             gps = gps,
             accel = accel,
             gyro = gyro,
+            mountZero = Live.mountZero,
         )
 
         val msg = RemoteProtocol.envelope(

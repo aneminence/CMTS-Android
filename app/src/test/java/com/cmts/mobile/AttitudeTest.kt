@@ -89,6 +89,24 @@ class AttitudeTest {
   assertEquals(-10.0, wrapSignedDegrees(-370.0), 1e-12)
   assertEquals(-20.0, applyMountZeroAttitude(listOf(0.0, 0.0, 350.0), listOf(0.0, 0.0, 10.0))[2]!!, 1e-12)
  }
+ @Test fun applyEnabledMountZeroMatchesBiasAtCapture() {
+  // Flat install: MountBasis ~ identity on vehicle axes; linear accel projects cleanly.
+  val accel = Sample("vehicle.accel", 1L, null, listOf(0.5, -0.2, STANDARD_GRAVITY))
+  val gyro = Sample("vehicle.gyro", 1L, null, listOf(0.01, -0.02, 0.03))
+  val attitude = Sample("vehicle.attitude", 1L, null, listOf(0.0, 0.0, 12.0))
+  val rv = listOf<Double?>(0.0, 0.0, 0.0, 1.0)
+  val z = captureMountZero(accel, gyro, attitude, 1L)!!
+  val axes = applyEnabledMountZero(z, accel.values, gyro.values, attitude.values, rv)
+  assertEquals(0.0, axes.gyro!![0]!!, 1e-12)
+  assertEquals(0.0, axes.gyro!![1]!!, 1e-12)
+  assertEquals(0.0, axes.gyro!![2]!!, 1e-12)
+  assertEquals(0.0, axes.attitude!![0]!!, 1e-6)
+  assertEquals(0.0, axes.attitude!![1]!!, 1e-6)
+  assertEquals(0.0, axes.attitude!![2]!!, 1e-6)
+  assertEquals(0.5, axes.accel!![0]!!, 1e-5)
+  assertEquals(-0.2, axes.accel!![1]!!, 1e-5)
+  assertEquals(0.0, axes.accel!![2]!!, 1e-5)
+ }
  @Test fun captureMountZeroRejectsIncomplete() {
   assertNull(captureMountZero(null, null, Sample("vehicle.attitude", 1L, null, listOf(0.0,0.0,0.0)), 1L))
   assertNull(captureMountZero(null, Sample("vehicle.gyro", 1L, null, listOf(0.0,0.0,0.0)), null, 1L))

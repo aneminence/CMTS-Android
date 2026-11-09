@@ -1,10 +1,16 @@
 package com.cmts.mobile.remote
 
+import com.cmts.mobile.MountZero
 import com.cmts.mobile.Sample
+import com.cmts.mobile.STANDARD_GRAVITY
+import com.cmts.mobile.applyEnabledMountZero
+import com.cmts.mobile.captureMountZero
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 class RemoteSamplePayloadTest {
     @Test
@@ -100,4 +106,95 @@ class RemoteSamplePayloadTest {
         assertTrue(payload.isNull("speedKph"))
         assertEquals(39.0, payload.getDouble("lat"), 0.0)
     }
+
+    @Test
+    fun mountZeroOffKeepsRawVehicleFields() {
+        val samples = baseImuSamples()
+        val raw = RemoteSamplePayload.build(
+            seq = 1L,
+            measureTimeMs = 1L,
+            receiveTimeMs = 1L,
+            vehicleLabel = "x",
+            samples = samples,
+            gps = null,
+            accel = samples["vehicle.accel"],
+            gyro = samples["vehicle.gyro"],
+            mountZero = MountZero(),
+        )
+        assertEquals(0.5, raw.getDouble("ax"), 0.0)
+        assertEquals(0.5, raw.getJSONObject("vehicle.accel").getDouble("x"), 0.0)
+        assertEquals(STANDARD_GRAVITY, raw.getJSONObject("vehicle.accel").getDouble("z"), 1e-9)
+        assertEquals(0.03, raw.getJSONObject("vehicle.gyro").getDouble("z"), 0.0)
+        assertEquals(12.0, raw.getJSONObject("vehicle.attitude").getDouble("yaw"), 0.0)
+    }
+
+    @Test
+    fun mountZeroOnTransformsVehicleAndCoreAxes() {
+        val samples = baseImuSamples()
+        val zero = captureMountZero(
+            samples["vehicle.accel"],
+            samples["vehicle.gyro"],
+            samples["vehicle.attitude"],
+            99L,
+        )!!
+        assertTrue(zero.enabled)
+
+        val off = RemoteSamplePayload.build(
+            seq = 1L,
+            measureTimeMs = 1L,
+            receiveTimeMs = 1L,
+            vehicleLabel = "x",
+            samples = samples,
+            gps = null,
+            accel = samples["vehicle.accel"],
+            gyro = samples["vehicle.gyro"],
+            mountZero = MountZero(),
+        )
+        val on = RemoteSamplePayload.build(
+            seq = 2L,
+            measureTimeMs = 1L,
+            receiveTimeMs = 1L,
+            vehicleLabel = "x",
+            samples = samples,
+            gps = null,
+            accel = samples["vehicle.accel"],
+            gyro = samples["vehicle.gyro"],
+            mountZero = zero,
+        )
+
+        // At capture pose: gyro bias-subtracted ~0; attitude relative ~0.
+        assertEquals(0.0, on.getJSONObject("vehicle.gyro").getDouble("x"), 1e-9)
+        assertEquals(0.0, on.getJSONObject("vehicle.gyro").getDouble("y"), 1e-9)
+        assertEquals(0.0, on.getJSONObject("vehicle.gyro").getDouble("z"), 1e-9)
+        assertEquals(0.0, on.getDouble("yawRateDps"), 1e-9)
+        assertEquals(0.0, on.getJSONObject("vehicle.attitude").getDouble("roll"), 1e-6)
+        assertEquals(0.0, on.getJSONObject("vehicle.attitude").getDouble("pitch"), 1e-6)
+        assertEquals(0.0, on.getJSONObject("vehicle.attitude").getDouble("yaw"), 1e-6)
+
+        // Accel becomes gravity-removed (+ projected); differs from raw-with-gravity.
+        assertNotEquals(off.getJSONObject("vehicle.accel").getDouble("z"), on.getJSONObject("vehicle.accel").getDouble("z"), 0.5)
+        assertTrue(abs(on.getDouble("az")) < 0.5)
+
+        // Matches shared helper used by Dashboard.
+        val expected = applyEnabledMountZero(
+            zero,
+            samples["vehicle.accel"]!!.values,
+            samples["vehicle.gyro"]!!.values,
+            samples["vehicle.attitude"]!!.values,
+            samples["phone.rotation_vector"]!!.values,
+        )
+        assertEquals(expected.accel!![0]!!, on.getDouble("ax"), 1e-9)
+        assertEquals(expected.accel!![1]!!, on.getDouble("ay"), 1e-9)
+        assertEquals(expected.accel!![2]!!, on.getDouble("az"), 1e-9)
+        assertEquals(expected.gyro!![0]!!, on.getJSONObject("vehicle.gyro").getDouble("x"), 1e-9)
+        assertEquals(expected.attitude!![2]!!, on.getJSONObject("vehicle.attitude").getDouble("yaw"), 1e-9)
+    }
+
+    private fun baseImuSamples(): Map<String, Sample> = mapOf(
+        "vehicle.accel" to Sample("vehicle.accel", 1L, null, listOf(0.5, -0.2, STANDARD_GRAVITY)),
+        "vehicle.gyro" to Sample("vehicle.gyro", 1L, null, listOf(0.01, -0.02, 0.03)),
+        "vehicle.attitude" to Sample("vehicle.attitude", 1L, null, listOf(0.0, 0.0, 12.0)),
+        // Identity RV → gravity device [0,0,g] → vehicle same; linear ≈ [0.5,-0.2,0]
+        "phone.rotation_vector" to Sample("phone.rotation_vector", 1L, null, listOf(0.0, 0.0, 0.0, 1.0)),
+    )
 }

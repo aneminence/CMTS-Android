@@ -51,8 +51,8 @@ Emitted at IMU cadence (throttled by `maxHz`). Typed **core** fields stay for Wi
 | `receiveTimeMs` | phone wall clock | ms |
 | `vehicleLabel` | device label | — |
 | `speedKph` | from internal GPS sample `[3]*3.6` | km/h |
-| `ax`/`ay`/`az` | preferred `vehicle.accel` else phone accel | m/s² (incl. gravity) |
-| `yawRateDps` | preferred vehicle/phone gyro Z | **deg/s** (converted) |
+| `ax`/`ay`/`az` | preferred `vehicle.accel` else phone accel | m/s²; **raw incl. gravity**; when `mountZero` on = gravity-removed linear in install vehicle axes |
+| `yawRateDps` | preferred vehicle/phone gyro Z | **deg/s** (converted); when `mountZero` on = zeroed+projected vehicle Z |
 | `lat`/`lon`/`altM`/`headingDeg` | from internal GPS sample | ° / m / ° |
 | `valid.{gnss,speed,imu,heading}` | gates | bool |
 
@@ -60,15 +60,24 @@ Emitted at IMU cadence (throttled by `maxHz`). Typed **core** fields stay for Wi
 
 | key | components | unit / notes |
 |---|---|---|
-| `vehicle.accel` | x,y,z | m/s², vehicle axes (X fwd / Y left / Z up), incl. gravity |
-| `vehicle.gyro` | x,y,z | **rad/s**, vehicle axes |
-| `vehicle.attitude` | roll,pitch,yaw | **deg**, vehicle Euler |
+| `vehicle.accel` | x,y,z | m/s², vehicle axes (X fwd / Y left / Z up); **raw incl. gravity**; when `mountZero` on = gravity-removed linear projected into install basis |
+| `vehicle.gyro` | x,y,z | **rad/s**, vehicle axes; when `mountZero` on = bias-subtracted then projected |
+| `vehicle.attitude` | roll,pitch,yaw | **deg**, vehicle Euler; when `mountZero` on = install-relative (`MountBasis.attitude`) |
 
 `device.status` still carries `satellitesVisible` / `satellitesUsed` for early Available registration.
 
+## Mount zero and sample coordinates
+
+- **`mountZero` off (default / after 复位)**: nested `vehicle.*` and core `ax`/`ay`/`az`/`yawRateDps` are **raw** (accel includes gravity; attitude relative magnetic north).
+- **`mountZero` on (after 归零)**: those fields are **zeroed vehicle coordinates**, using the **same transform as the phone Dashboard**:
+  1. accel → gravity-removed linear (`vehicleLinearAccel`) then `MountBasis.project`
+  2. gyro → subtract install bias then `MountBasis.project` (still **rad/s** nested; core yaw still **deg/s**)
+  3. attitude → `MountBasis.attitude` vs install reference (deg)
+- Missing measurements stay JSON `null` (never silent 0). Win should **consume transformed sample values** after reset; do not re-derive the install basis locally.
+
 ## stream.reset (mount zero / clear)
 
-Dashboard **归零** / **复位** broadcast a **control** frame (preferred over sample queue). Win must clear plot buffers on this event; do **not** rely on subsequent `stream.sample` values alone (nested vehicle.* stay raw; mountZero only affects phone UI).
+Dashboard **归零** / **复位** broadcast a **control** frame (preferred over sample queue). Win must clear plot buffers on this event. After `mount_zero`, subsequent `stream.sample` vehicle.*/core axis fields are already in zeroed vehicle coordinates (same as phone Dashboard).
 
 Example (归零):
 ```json

@@ -50,6 +50,42 @@ internal fun applyMountZeroAttitude(values: List<Double?>, bias: List<Double>?):
  }
 }
 
+/**
+ * When mountZero is enabled, same vehicle-axis transform as Dashboard live display:
+ * - accel: gravity-removed linear, then MountBasis.project
+ * - gyro: subtract install bias, then MountBasis.project (rad/s)
+ * - attitude: MountBasis.attitude vs install reference (deg); Euler-bias fallback
+ * Callers keep raw when mountZero.enabled is false.
+ */
+internal data class MountZeroAxes(
+    val accel: List<Double?>?,
+    val gyro: List<Double?>?,
+    val attitude: List<Double?>?,
+)
+
+internal fun applyEnabledMountZero(
+    zero: MountZero,
+    vehicleAccel: List<Double?>?,
+    vehicleGyro: List<Double?>?,
+    vehicleAttitude: List<Double?>?,
+    rotationVector: List<Double?>?,
+): MountZeroAxes {
+    require(zero.enabled) { "applyEnabledMountZero requires mountZero.enabled" }
+    val linear = vehicleLinearAccel(vehicleAccel, rotationVector, vehicleAttitude)
+    val accel = projectMountOrPassthrough(zero.basis, linear)
+    val biasedGyro = applyMountZeroLinear(vehicleGyro ?: emptyList(), zero.gyro)
+    val gyro = projectMountOrPassthrough(zero.basis, biasedGyro)
+    val attitude = zero.basis?.attitude(vehicleAttitude, zero.attitude)?.map { it as Double? }
+        ?: applyMountZeroAttitude(vehicleAttitude ?: emptyList(), zero.attitude)
+    return MountZeroAxes(accel = accel, gyro = gyro, attitude = attitude)
+}
+
+internal fun projectMountOrPassthrough(basis: MountBasis?, values: List<Double?>?): List<Double?>? {
+    if (values == null) return null
+    val projected = basis?.project(values) ?: return values
+    return projected.map { it as Double? }
+}
+
 /** Snapshot gyro+attitude as install zero. Accel bias unused — Dashboard uses gravity removal. */
 internal fun captureMountZero(
  accel: Sample?,
