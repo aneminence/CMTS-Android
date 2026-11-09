@@ -8,7 +8,7 @@ import org.junit.Test
 
 class RemoteSamplePayloadTest {
     @Test
-    fun fullSnapshotKeepsCoreAndAddsNestedSources() {
+    fun fullSnapshotKeepsCoreAndVehicleNestedOnly() {
         val samples = mapOf(
             "phone.accel" to Sample("phone.accel", 1L, null, listOf(0.1, 0.2, 9.8)),
             "vehicle.accel" to Sample("vehicle.accel", 1L, null, listOf(0.2, -0.1, 9.8)),
@@ -39,16 +39,19 @@ class RemoteSamplePayloadTest {
 
         assertEquals(7L, payload.getLong("seq"))
         assertEquals(0.2, payload.getDouble("ax"), 0.0)
-        assertEquals(18.0, payload.getJSONObject("phone.satellites").getDouble("visible"), 0.0)
-        assertEquals(12.0, payload.getJSONObject("phone.satellites").getDouble("used"), 0.0)
-        assertEquals(0.03, payload.getJSONObject("phone.gyro").getDouble("z"), 0.0)
-        assertEquals(1013.25, payload.getDouble("phone.pressure"), 0.0)
-        assertEquals(5.0, payload.getJSONObject("phone.gps").getDouble("speed"), 0.0)
+        assertEquals(18.0 * 0 + 5.0 * 3.6, payload.getDouble("speedKph"), 0.0)
+        assertFalse(payload.has("phone.accel"))
+        assertFalse(payload.has("phone.gyro"))
+        assertFalse(payload.has("phone.attitude"))
+        assertFalse(payload.has("phone.rotation_vector"))
+        assertFalse(payload.has("phone.gps"))
+        assertFalse(payload.has("phone.satellites"))
+        assertFalse(payload.has("phone.pressure"))
+        assertEquals(0.03, payload.getJSONObject("vehicle.gyro").getDouble("z"), 0.0)
         // nested gyro stays rad/s; core yawRateDps is deg/s from gyro Z
         assertEquals(Math.toDegrees(0.03), payload.getDouble("yawRateDps"), 1e-9)
         assertEquals(1.0, payload.getJSONObject("vehicle.attitude").getDouble("roll"), 0.0)
-        assertEquals(10.0, payload.getJSONObject("phone.attitude").getDouble("pitch"), 0.0)
-        assertEquals(1.0, payload.getJSONObject("phone.rotation_vector").getDouble("w"), 0.0)
+        assertEquals(0.2, payload.getJSONObject("vehicle.accel").getDouble("x"), 0.0)
         assertTrue(payload.getJSONObject("valid").getBoolean("imu"))
         assertTrue(payload.getJSONObject("valid").getBoolean("gnss"))
     }
@@ -68,14 +71,15 @@ class RemoteSamplePayloadTest {
         assertTrue(payload.isNull("ax"))
         assertTrue(payload.isNull("lat"))
         assertFalse(payload.has("phone.accel"))
-        assertFalse(payload.has("phone.pressure"))
+        assertFalse(payload.has("vehicle.accel"))
         assertFalse(payload.has("vehicle.gyro"))
         assertFalse(payload.getJSONObject("valid").getBoolean("imu"))
     }
 
     @Test
-    fun presentSourceKeepsNullComponents() {
+    fun presentVehicleKeepsNullComponents() {
         val samples = mapOf(
+            "vehicle.accel" to Sample("vehicle.accel", 1L, null, listOf(0.5, null, 9.8)),
             "phone.gps" to Sample("phone.gps", 1L, null, listOf(39.0, 117.0, null, null, null, 2.0, null, null)),
         )
         val payload = RemoteSamplePayload.build(
@@ -85,14 +89,15 @@ class RemoteSamplePayloadTest {
             vehicleLabel = "x",
             samples = samples,
             gps = samples["phone.gps"],
-            accel = null,
+            accel = samples["vehicle.accel"],
             gyro = null,
         )
-        val gps = payload.getJSONObject("phone.gps")
-        assertEquals(39.0, gps.getDouble("lat"), 0.0)
-        assertTrue(gps.isNull("alt"))
-        assertTrue(gps.isNull("speed"))
-        assertEquals(2.0, gps.getDouble("horizAcc"), 0.0)
+        val accel = payload.getJSONObject("vehicle.accel")
+        assertEquals(0.5, accel.getDouble("x"), 0.0)
+        assertTrue(accel.isNull("y"))
+        assertEquals(9.8, accel.getDouble("z"), 0.0)
+        assertFalse(payload.has("phone.gps"))
         assertTrue(payload.isNull("speedKph"))
+        assertEquals(39.0, payload.getDouble("lat"), 0.0)
     }
 }

@@ -133,6 +133,40 @@ object RemoteBridge {
         }
     }
 
+    /**
+     * Explicit zero/clear signal for Win plot buffers.
+     * Samples stay raw; Win clears curves on this control frame (not on sample values alone).
+     *
+     * type: stream.reset
+     * payload: {
+     *   reason: "mount_zero" | "mount_zero_clear",
+     *   mountZeroEnabled: bool,
+     *   zeroedAtElapsedNanos: long|null,
+     *   nextSeq: long
+     * }
+     */
+    fun notifyStreamReset(
+        reason: String,
+        mountZeroEnabled: Boolean,
+        zeroedAtElapsedNanos: Long? = null,
+    ) {
+        if (!started.get()) return
+        val idStore = store ?: return
+        val ws = server ?: return
+        val payload = JSONObject()
+            .put("reason", reason)
+            .put("mountZeroEnabled", mountZeroEnabled)
+            .put("nextSeq", seq.get())
+        RemoteProtocol.putNullableLong(payload, "zeroedAtElapsedNanos", zeroedAtElapsedNanos)
+        val msg = RemoteProtocol.envelope(
+            type = "stream.reset",
+            deviceId = idStore.deviceId,
+            payload = payload,
+        )
+        ws.broadcastControl(msg.toString())
+        Log.i(TAG, "stream.reset reason=$reason enabled=$mountZeroEnabled")
+    }
+
     private fun maybePublishSample(ws: RemoteWsServer) {
         val defaultHz = store?.maxHz ?: RemoteSampleTiming.DEFAULT_MAX_HZ
         val hz = RemoteSampleTiming.clampHz(ws.maxSubscriberHz(defaultHz))

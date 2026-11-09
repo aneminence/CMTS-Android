@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import java.util.Locale
+import com.cmts.mobile.remote.RemoteBridge
 
 internal fun dashboardValue(value: Double?, scale: Double = 1.0, digits: Int = 1): String =
     value?.takeIf { it.isFinite() }?.let { String.format(Locale.US, "%.${digits}f", it * scale).let { text -> if (text == "-0.0") "0.0" else text } } ?: "—"
@@ -286,9 +287,25 @@ private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
   rates = rates,
   onZero = {
    val snapped = captureMountZero(accelRaw, gyroRaw, attitudeRaw, SystemClock.elapsedRealtimeNanos())
-   if (snapped != null) { LaunchCalibration.cancel(); Live.mountZero = snapped }
+   if (snapped != null) {
+    LaunchCalibration.cancel()
+    Live.mountZero = snapped
+    RemoteBridge.notifyStreamReset(
+     reason = "mount_zero",
+     mountZeroEnabled = true,
+     zeroedAtElapsedNanos = snapped.zeroedAtElapsedNanos,
+    )
+   }
   },
-  onReset = { LaunchCalibration.cancel(); Live.mountZero = MountZero() },
+  onReset = {
+   LaunchCalibration.cancel()
+   Live.mountZero = MountZero()
+   RemoteBridge.notifyStreamReset(
+    reason = "mount_zero_clear",
+    mountZeroEnabled = false,
+    zeroedAtElapsedNanos = null,
+   )
+  },
  )
 }
 

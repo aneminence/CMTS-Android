@@ -38,9 +38,9 @@ Win should split host/port/path from the URI and the `token` query; remember las
 ```
 5. Expect `stream.sample` with `seq` monotonic and `measureTimeMs` stepping much faster than 1 Hz when phone is moving; `record.start` / `record.stop` return `record.status`.
 
-## stream.sample payload (full Live snapshot)
+## stream.sample payload (vehicle Available)
 
-Emitted at IMU cadence (throttled by `maxHz`). Typed **core** fields stay for Win backward compat; richer Live sources are added **alongside** as nested objects (Win flattens to `source.component`).
+Emitted at IMU cadence (throttled by `maxHz`). Typed **core** fields stay for Win backward compat; nested Live sources are **vehicle.* only** (Win flattens to `source.component`). Nested `phone.*` is no longer published.
 
 ### Core (always present; null when invalid — never silent 0)
 
@@ -50,28 +50,42 @@ Emitted at IMU cadence (throttled by `maxHz`). Typed **core** fields stay for Wi
 | `measureTimeMs` | IMU elapsed→wall | ms |
 | `receiveTimeMs` | phone wall clock | ms |
 | `vehicleLabel` | device label | — |
-| `speedKph` | from `phone.gps[3]*3.6` | km/h |
-| `ax`/`ay`/`az` | preferred `vehicle.accel` else `phone.accel` | m/s² (incl. gravity) |
+| `speedKph` | from internal GPS sample `[3]*3.6` | km/h |
+| `ax`/`ay`/`az` | preferred `vehicle.accel` else phone accel | m/s² (incl. gravity) |
 | `yawRateDps` | preferred vehicle/phone gyro Z | **deg/s** (converted) |
-| `lat`/`lon`/`altM`/`headingDeg` | from `phone.gps` | ° / m / ° |
+| `lat`/`lon`/`altM`/`headingDeg` | from internal GPS sample | ° / m / ° |
 | `valid.{gnss,speed,imu,heading}` | gates | bool |
 
-### Nested Live sources (omit key if source absent)
+### Nested Live sources (omit key if source absent; vehicle only)
 
 | key | components | unit / notes |
 |---|---|---|
-| `phone.accel` | x,y,z | m/s², device axes, incl. gravity |
 | `vehicle.accel` | x,y,z | m/s², vehicle axes (X fwd / Y left / Z up), incl. gravity |
-| `phone.gyro` | x,y,z | **rad/s**, device axes (as stored in CSV) |
 | `vehicle.gyro` | x,y,z | **rad/s**, vehicle axes |
 | `vehicle.attitude` | roll,pitch,yaw | **deg**, vehicle Euler |
-| `phone.attitude` | pitch,roll,azimuth,headingAcc | **deg**, Android getOrientation natural axes |
-| `phone.rotation_vector` | x,y,z,w,headingAcc | raw Android RV; headingAcc **rad** (neg/unavailable → null) |
-| `phone.pressure` | scalar | **mbar** |
-| `phone.satellites` | visible,used | count |
-| `phone.gps` | lat,lon,alt,speed,bearing,horizAcc,vertAcc,speedAcc | °,°,m,**m/s**,°,m,m,m/s |
 
 `device.status` still carries `satellitesVisible` / `satellitesUsed` for early Available registration.
+
+## stream.reset (mount zero / clear)
+
+Dashboard **归零** / **复位** broadcast a **control** frame (preferred over sample queue). Win must clear plot buffers on this event; do **not** rely on subsequent `stream.sample` values alone (nested vehicle.* stay raw; mountZero only affects phone UI).
+
+Example (归零):
+```json
+{"v":1,"type":"stream.reset","id":"<uuid>","ts":0,"deviceId":"<id>","payload":{"reason":"mount_zero","mountZeroEnabled":true,"zeroedAtElapsedNanos":1234567890,"nextSeq":42}}
+```
+
+Example (复位):
+```json
+{"v":1,"type":"stream.reset","id":"<uuid>","ts":0,"deviceId":"<id>","payload":{"reason":"mount_zero_clear","mountZeroEnabled":false,"zeroedAtElapsedNanos":null,"nextSeq":43}}
+```
+
+| payload key | meaning |
+|---|---|
+| `reason` | `mount_zero` or `mount_zero_clear` |
+| `mountZeroEnabled` | true after 归零, false after 复位 |
+| `zeroedAtElapsedNanos` | elapsedRealtimeNanos at capture; null on clear |
+| `nextSeq` | next `stream.sample` seq after the reset |
 
 ## Holds
 - `CLIENT_RECORD` — CSV session (UI + remote share RecordingCommands)

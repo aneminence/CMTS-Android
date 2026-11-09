@@ -4,17 +4,14 @@ import com.cmts.mobile.Sample
 import org.json.JSONObject
 
 /**
- * Builds stream.sample payload: typed core fields + Live source objects Win flattens.
- * Missing sources are omitted (no invent). Present sources use JSON null for missing components.
+ * Builds stream.sample payload: typed core fields + vehicle.* Live sources Win flattens.
+ * Nested phone.* omitted (Available is vehicle-only). Missing sources omitted (no invent).
+ * Present sources use JSON null for missing components.
  */
 internal object RemoteSamplePayload {
     private val ACCEL_XYZ = listOf("x", "y", "z")
     private val GYRO_XYZ = listOf("x", "y", "z")
     private val VEHICLE_ATTITUDE = listOf("roll", "pitch", "yaw")
-    private val PHONE_ATTITUDE = listOf("pitch", "roll", "azimuth", "headingAcc")
-    private val ROTATION_VECTOR = listOf("x", "y", "z", "w", "headingAcc")
-    private val GPS = listOf("lat", "lon", "alt", "speed", "bearing", "horizAcc", "vertAcc", "speedAcc")
-    private val SATELLITES = listOf("visible", "used")
 
     fun build(
         seq: Long,
@@ -57,20 +54,14 @@ internal object RemoteSamplePayload {
                 .put("heading", headingValid),
         )
 
-        putVector(payload, "phone.accel", samples["phone.accel"], ACCEL_XYZ)
+        // Nested Live sources: vehicle.* only (phone.* omitted for Available).
         putVector(payload, "vehicle.accel", samples["vehicle.accel"], ACCEL_XYZ)
-        putVector(payload, "phone.gyro", samples["phone.gyro"], GYRO_XYZ)
         putVector(payload, "vehicle.gyro", samples["vehicle.gyro"], GYRO_XYZ)
         putVector(payload, "vehicle.attitude", samples["vehicle.attitude"], VEHICLE_ATTITUDE)
-        putVector(payload, "phone.attitude", samples["phone.attitude"], PHONE_ATTITUDE)
-        putVector(payload, "phone.rotation_vector", samples["phone.rotation_vector"], ROTATION_VECTOR)
-        putVector(payload, "phone.gps", samples["phone.gps"], GPS)
-        putVector(payload, "phone.satellites", samples["phone.satellites"], SATELLITES)
-        putScalar(payload, "phone.pressure", samples["phone.pressure"])
         return payload
     }
 
-    /** Units: accel m/s2 (incl. gravity); gyro rad/s; attitude deg; pressure mbar; gps speed m/s. */
+    /** Units: accel m/s2 (incl. gravity); gyro rad/s; attitude deg. */
     fun putVector(payload: JSONObject, key: String, sample: Sample?, names: List<String>) {
         if (sample == null) return
         val child = JSONObject()
