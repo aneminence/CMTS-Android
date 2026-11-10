@@ -1,7 +1,7 @@
 ﻿# CMTS Android
 
 **Chassis Master Test Suite — 手机端 Standalone MVP**  
-当前版本：**0.1.2**（`versionCode` 3）· 包名 `com.cmts.mobile` · 显示名 CMTS
+当前版本：**0.1.3**（`versionCode` 4）· 包名 `com.cmts.mobile` · 显示名 CMTS
 
 手机端 GNSS + IMU 采集、Compose 地图仪表、会话导出、姿态/坡度、回放曲线，以及独立的 **Performance Test（车辆性能测试）**（含回放离线计分）模块。  
 Windows 客户端（`Chassis Master Test Suite`）为本仓库只读参考，**不在此仓库修改**。
@@ -47,6 +47,13 @@ CMTS Android 面向底盘与动力学路测场景：在真机上以前台服务�
 - 本地会话回放（播放 / 暂停、进度、0.5×–8×）；**回放曲线**（速度 / 俯仰 / 侧倾 / 三轴加速度、时间窗与共享游标）；与 Live 隔离。外部「打开 VBO」仍为文件页预览，**不等于**主界面通用回放。
 - **回放离线计分**：设定速度边界后逐段出结果；读原始 `samples.csv` phone.gps，复用性能引擎，写 `result-vN.json`（不覆盖原始）。
 - 导出：**VBO**、**KML**（`gx:Track` + 原始 GNSS 海拔 / 速度 m/s / 水平精度；旧记录可从手机原始会话重新导出）、**CSV**（原样 `samples.csv`）。ZIP 入口已移除，原始文件仍保留。
+
+### 局域网连接（0.1.3）
+
+- Android 作为 WebSocket 服务端，在局域网发布 CMTS 发现信息；Windows 可自动发现并双击连接。
+- 支持无 token 的 `device.hello`，协议版本仍会校验；同一局域网可访问的客户端均可连接，这是当前单人使用模式。
+- 设备型号单独提供；例如 SM-N9860 显示为 Samsung Galaxy Note20 Ultra 5G。连接二维码只含设备与网络元数据。
+- Windows 目前只支持同时连接一台手机；公网和多设备并行采集尚未实现。
 
 ### USB 调试
 

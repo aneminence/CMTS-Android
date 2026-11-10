@@ -25,6 +25,7 @@ object LocalIpv4 {
     ): String = "cmts://$ipv4:$port$path?token=$token"
 
     fun pickPreferred(candidates: List<Candidate>): String? {
+        val candidates = candidates.filter { !it.iface.startsWith("rmnet", true) && !it.iface.startsWith("ccmni", true) && !it.iface.startsWith("tun", true) }
         if (candidates.isEmpty()) return null
         candidates.firstOrNull { it.iface.startsWith("wlan", ignoreCase = true) }?.host?.let { return it }
         val nonRmnet = candidates.filter { !it.iface.startsWith("rmnet", ignoreCase = true) }
@@ -38,7 +39,7 @@ object LocalIpv4 {
         val out = mutableListOf<Candidate>()
         val ifaces = runCatching { NetworkInterface.getNetworkInterfaces() }.getOrNull() ?: return emptyList()
         for (iface in ifaces) {
-            if (!iface.isUp || iface.isLoopback) continue
+            if (!runCatching { iface.isUp && !iface.isLoopback }.getOrDefault(false)) continue
             val name = iface.name ?: continue
             for (addr in iface.inetAddresses) {
                 if (addr !is Inet4Address) continue

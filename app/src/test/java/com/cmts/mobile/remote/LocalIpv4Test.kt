@@ -5,6 +5,12 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class LocalIpv4Test {
+    @Test fun cellularOnlyIsNotALanAddress() {
+        assertNull(LocalIpv4.pickPreferred(listOf(LocalIpv4.Candidate("rmnet0", "10.1.2.3", true))))
+    }
+    @Test fun hotspotInterfaceIsAcceptedWithoutFixedGateway() {
+        assertEquals("192.168.71.1", LocalIpv4.pickPreferred(listOf(LocalIpv4.Candidate("swlan0", "192.168.71.1", true))))
+    }
     @Test
     fun prefersWlanOverRmnet() {
         val picked = LocalIpv4.pickPreferred(

@@ -23,6 +23,10 @@ object RemoteBridge {
 
     private val started = AtomicBoolean(false)
     private val seq = AtomicLong(0L)
+    private var discovery: RemoteDiscovery? = null
+    fun discoveryStatus(): String = discovery?.status ?: "未注册"
+    fun connectedClients(): Int = server?.authenticatedCount() ?: 0
+    fun subscribers(): Int = server?.subscriberCount() ?: 0
     private val main = Handler(Looper.getMainLooper())
 
     @Volatile private var appContext: Context? = null
@@ -53,7 +57,7 @@ object RemoteBridge {
 
     fun identity(): RemoteIdentityStore? = store
 
-    fun isRunning(): Boolean = started.get() && server != null
+    fun isRunning(): Boolean = started.get() && server?.isRunning() == true
 
     fun listenEndpoint(): String =
         "ws://0.0.0.0:${RemoteIdentityStore.DEFAULT_PORT}${RemoteIdentityStore.WS_PATH}"
@@ -86,6 +90,7 @@ object RemoteBridge {
         server = ws
         try {
             ws.start()
+            discovery = RemoteDiscovery(app, idStore).also { it.start() }
             main.removeCallbacks(tick)
             main.post(tick)
         } catch (e: Exception) {
@@ -96,6 +101,8 @@ object RemoteBridge {
     }
 
     fun stop() {
+        discovery?.stop()
+        discovery = null
         main.removeCallbacks(tick)
         if (!started.getAndSet(false)) {
             releaseRemoteHold()
@@ -274,6 +281,14 @@ object RemoteBridge {
         val ctx = appContext ?: return
 
         when (type) {
+            "device.discover" -> {
+                if (msg.optInt("v", 0) != 1) return
+                client.enqueueControl(RemoteProtocol.envelope("device.discover", idStore.deviceId,
+                    JSONObject().put("discoveryVersion", 1).put("deviceType", "cmts-android")
+                        .put("deviceLabel", idStore.deviceLabel).put("deviceModel", idStore.deviceModel).put("protoMin", 1).put("protoMax", 1)
+                        .put("port", RemoteIdentityStore.DEFAULT_PORT).put("path", RemoteIdentityStore.WS_PATH)
+                        .put("authRequired", false).put("pairingSupported", false), id = id).toString())
+            }
             "device.hello" -> handleHello(client, id, payload, idStore)
             "stream.subscribe" -> {
                 if (!client.authenticated) {
@@ -322,7 +337,7 @@ object RemoteBridge {
                 if (!client.authenticated) return
                 val values = JSONObject()
                     .put("maxHz", idStore.maxHz)
-                    .put("deviceLabel", idStore.deviceLabel)
+                    .put("deviceLabel", idStore.deviceLabel).put("deviceModel", idStore.deviceModel)
                     .put("recordMode", "manual")
                     .put("port", RemoteIdentityStore.DEFAULT_PORT)
                     .put("path", RemoteIdentityStore.WS_PATH)
@@ -352,7 +367,7 @@ object RemoteBridge {
                                 "values",
                                 JSONObject()
                                     .put("maxHz", idStore.maxHz)
-                                    .put("deviceLabel", idStore.deviceLabel)
+                                    .put("deviceLabel", idStore.deviceLabel).put("deviceModel", idStore.deviceModel)
                                     .put("recordMode", "manual"),
                             ),
                         id = id,
@@ -371,7 +386,7 @@ object RemoteBridge {
     ) {
         val protoMin = payload.optInt("protoMin", 1)
         val protoMax = payload.optInt("protoMax", 1)
-        if (RemoteIdentityStore.PROTO < protoMin || RemoteIdentityStore.PROTO > protoMax) {
+        if (!RemoteHelloPolicy.accepts(protoMin, protoMax)) {
             client.authenticated = false
             client.enqueueControl(
                 RemoteProtocol.envelope(
@@ -386,19 +401,6 @@ object RemoteBridge {
             )
             return
         }
-        val token = payload.optString("token", "")
-        if (token.isEmpty() || token != idStore.pairingToken) {
-            client.authenticated = false
-            client.enqueueControl(
-                RemoteProtocol.envelope(
-                    "device.hello",
-                    idStore.deviceId,
-                    JSONObject().put("ok", false).put("errorCode", "auth_failed"),
-                    id = id,
-                ).toString(),
-            )
-            return
-        }
         client.authenticated = true
         client.enqueueControl(
             RemoteProtocol.envelope(
@@ -406,7 +408,7 @@ object RemoteBridge {
                 idStore.deviceId,
                 JSONObject()
                     .put("ok", true)
-                    .put("deviceLabel", idStore.deviceLabel)
+                    .put("deviceLabel", idStore.deviceLabel).put("deviceModel", idStore.deviceModel)
                     .put("capabilities", JSONArray(listOf("gnss", "imu", "record")))
                     .put("recordState", RecordingStateMachine.snapshot().name)
                     .put("proto", RemoteIdentityStore.PROTO),

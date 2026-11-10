@@ -783,13 +783,21 @@ private fun MainCaptureScreen(
 private fun RemoteEndpointRow() {
  val context = LocalContext.current
  val store = remember { RemoteIdentityStore(context) }
- var token by remember { mutableStateOf(store.pairingToken) }
  val deviceId = remember { store.deviceId }
- val running = RemoteBridge.isRunning()
- fun copyToken() {
-  val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-  cm.setPrimaryClip(ClipData.newPlainText("cmts-pairing-token", token))
-  Toast.makeText(context, "已复制 token", Toast.LENGTH_SHORT).show()
+ var running by remember { mutableStateOf(RemoteBridge.isRunning()) }
+ var clients by remember { mutableStateOf(0) }
+ var subscribers by remember { mutableStateOf(0) }
+ var discovery by remember { mutableStateOf("") }
+ var addresses by remember { mutableStateOf(emptyList<LocalIpv4.Candidate>()) }
+ LaunchedEffect(Unit) {
+  while (true) {
+   running = RemoteBridge.isRunning()
+   clients = RemoteBridge.connectedClients()
+   subscribers = RemoteBridge.subscribers()
+   discovery = RemoteBridge.discoveryStatus()
+   addresses = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { LocalIpv4.enumerateCandidates() }
+   kotlinx.coroutines.delay(1000)
+  }
  }
  fun copyConnectionString() {
   val ip = LocalIpv4.resolvePreferred()
@@ -797,7 +805,7 @@ private fun RemoteEndpointRow() {
    Toast.makeText(context, "无可用局域网 IP，请先连 Wi-Fi", Toast.LENGTH_SHORT).show()
    return
   }
-  val uri = LocalIpv4.buildPairingUri(ip, token)
+  val uri = "cmts://$ip:${RemoteIdentityStore.DEFAULT_PORT}${RemoteIdentityStore.WS_PATH}"
   val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
   cm.setPrimaryClip(ClipData.newPlainText("cmts-pairing-uri", uri))
   Toast.makeText(context, "已复制连接串", Toast.LENGTH_SHORT).show()
@@ -809,14 +817,21 @@ private fun RemoteEndpointRow() {
    color = Color(0xFFD4AF37),
   )
   Text(
-   "deviceId ${deviceId.take(8)}… · token $token",
+   "${store.deviceModel} · 无需配对",
    style = MaterialTheme.typography.labelSmall,
    modifier = Modifier.clickable(onClick = { copyConnectionString() }),
   )
+  com.cmts.mobile.remote.ConnectionQrButton(store)
+  Text("热点状态：系统未提供可靠状态，请在系统设置确认", style = MaterialTheme.typography.labelSmall)
+  Text("设备发现：$discovery · 已授权客户端 $clients · 订阅 $subscribers", style = MaterialTheme.typography.labelSmall)
+  addresses.forEach { Text("本机地址 ${it.iface}: ${it.host}:8787（需电脑验证可达）", style = MaterialTheme.typography.labelSmall) }
+  TextButton(onClick = {
+   store.remoteEnabled = !running
+   if (running) RemoteBridge.stop() else RemoteBridge.start(context)
+   running = RemoteBridge.isRunning()
+  }) { Text(if (running) "停止通信服务" else "启动通信服务") }
   Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
    TextButton(onClick = { copyConnectionString() }) { Text("复制连接串") }
-   TextButton(onClick = { copyToken() }) { Text("复制 token") }
-   TextButton(onClick = { token = RemoteBridge.resetToken(context) }) { Text("重置配对码") }
   }
  }
 }
@@ -875,4 +890,3 @@ private fun ReplaySeekBar(history: ReplayData, index: Int, pause: () -> Unit, se
    Modifier.align(Alignment.TopCenter), style = MaterialTheme.typography.labelSmall)
  }
 }
-

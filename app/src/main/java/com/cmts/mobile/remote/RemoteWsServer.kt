@@ -35,6 +35,7 @@ class RemoteWsServer(
         Thread(r, "cmts-ws-client").apply { isDaemon = true }
     }
     private val clients = ConcurrentHashMap.newKeySet<Client>()
+    private val slots = java.util.concurrent.Semaphore(16)
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -49,7 +50,10 @@ class RemoteWsServer(
                     } catch (_: IOException) {
                         break
                     }
-                    pool.execute { handleSocket(socket) }
+                    if (!slots.tryAcquire()) socket.close() else {
+                        try { pool.execute { try { handleSocket(socket) } finally { slots.release() } } }
+                        catch (_: java.util.concurrent.RejectedExecutionException) { slots.release(); socket.close() }
+                    }
                 }
             } finally {
                 running.set(false)
@@ -72,9 +76,12 @@ class RemoteWsServer(
     }
 
     fun clientCount(): Int = clients.size
+    fun authenticatedCount(): Int = clients.count { it.authenticated }
+    fun subscriberCount(): Int = clients.count { it.authenticated && it.subscribed }
+    fun isRunning(): Boolean = running.get()
 
     fun broadcastControl(text: String) {
-        clients.forEach { it.enqueueControl(text) }
+        clients.filter { it.authenticated }.forEach { it.enqueueControl(text) }
     }
 
     fun broadcastSample(text: String) {
@@ -98,6 +105,7 @@ class RemoteWsServer(
     private fun handleSocket(socket: Socket) {
         try {
             socket.tcpNoDelay = true
+            socket.soTimeout = 5000
             val input = BufferedInputStream(socket.getInputStream())
             val output = BufferedOutputStream(socket.getOutputStream())
             if (!handshake(input, output)) {
@@ -110,6 +118,7 @@ class RemoteWsServer(
             client.startWriter()
             try {
                 while (running.get() && !socket.isClosed) {
+                    socket.soTimeout = if (client.authenticated) 0 else 5000
                     val frame = readFrame(input) ?: break
                     when (frame.opcode) {
                         0x1 -> onText(client, String(frame.payload, StandardCharsets.UTF_8))
@@ -133,9 +142,10 @@ class RemoteWsServer(
     private fun handshake(input: InputStream, output: OutputStream): Boolean {
         val lines = mutableListOf<String>()
         val buf = ByteArrayOutputStream()
+        var headerBytes = 0
         while (true) {
             val b = input.read()
-            if (b < 0) return false
+            if (++headerBytes > 16384 || b < 0) return false
             if (b == '\n'.code) {
                 val line = buf.toString(StandardCharsets.UTF_8.name()).trimEnd('\r')
                 buf.reset()
@@ -286,7 +296,7 @@ class RemoteWsServer(
                     len = v
                 }
             }
-            if (len > 1_000_000L) return null
+            if (len < 0 || len > 1_000_000L) return null
             val mask = if (masked) {
                 val m = ByteArray(4)
                 if (!readFully(input, m)) return null
