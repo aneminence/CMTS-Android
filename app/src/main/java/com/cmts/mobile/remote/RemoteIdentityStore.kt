@@ -26,6 +26,9 @@ class RemoteIdentityStore(context: Context) {
             prefs.edit().putString(KEY_TOKEN, value).apply()
         }
 
+    val deviceModel: String
+        get() = RemoteDeviceModel.format(android.os.Build.MANUFACTURER, android.os.Build.MODEL)
+
     var deviceLabel: String
         get() = prefs.getString(KEY_LABEL, null) ?: DEFAULT_LABEL
         set(value) {

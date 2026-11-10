@@ -1,10 +1,10 @@
-import java.util.Properties
+﻿import java.util.Properties
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.plugin.compose") }
 val localConfig = Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) } }
 android {
     namespace = "com.cmts.mobile"
     compileSdk = 35
-    defaultConfig { applicationId = "com.cmts.mobile"; minSdk = 26; targetSdk = 35; versionCode = 3; versionName = "0.1.2"; manifestPlaceholders["AMAP_API_KEY"] = localConfig.getProperty("AMAP_API_KEY", "") }
+    defaultConfig { applicationId = "com.cmts.mobile"; minSdk = 26; targetSdk = 35; versionCode = 4; versionName = "0.1.3"; manifestPlaceholders["AMAP_API_KEY"] = localConfig.getProperty("AMAP_API_KEY", "") }
     // AGP 9 debug defaults to v2-only; file-manager sideload on some OEMs needs v1 as well.
     signingConfigs {
         getByName("debug") {
@@ -22,6 +22,7 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
 dependencies {
+    implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.graphics:graphics-path:1.1.0")
     implementation("com.amap.api:3dmap-location-search:11.3.100_loc11.3.101_sea9.8.1")
     implementation(files("libs/CH34XUartDriver.jar"))
