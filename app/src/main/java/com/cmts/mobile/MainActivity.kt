@@ -380,14 +380,10 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
    return lastGood[key] ?: raw
   }
   Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-   Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-    PeekGauge("速度", display("spd", gps,3,3.6), "km/h", Modifier.weight(1f).fillMaxHeight())
-    PeekGauge("高度", display("alt", gps,2), "m", Modifier.weight(1f).fillMaxHeight())
-   }
-   Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-    PeekGauge("大气压力", display("prs", samples["phone.pressure"],0), "mbar", Modifier.weight(1f).fillMaxHeight())
-    PeekGauge("卫星 可见 / 定位", "${display("sv", sat,0,digits=0)} / ${display("su", sat,1,digits=0)}", "颗", Modifier.weight(1f).fillMaxHeight())
-   }
+   PeekGauge("速度", display("spd", gps,3,3.6), "km/h", Modifier.fillMaxWidth().weight(1f))
+   PeekGauge("高度", display("alt", gps,2), "m", Modifier.fillMaxWidth().weight(1f))
+   PeekGauge("大气压力", display("prs", samples["phone.pressure"],0), "mbar", Modifier.fillMaxWidth().weight(1f))
+   PeekGauge("卫星 可见 / 定位", "${display("sv", sat,0,digits=0)} / ${display("su", sat,1,digits=0)}", "颗", Modifier.fillMaxWidth().weight(1f))
   }
   Text(pullHint, color = Color(0xFFD4AF37), style = MaterialTheme.typography.labelSmall, maxLines = 1)
   Text(if(frame != null) "历史回放" else Live.status, style = MaterialTheme.typography.labelSmall, maxLines = 1)
