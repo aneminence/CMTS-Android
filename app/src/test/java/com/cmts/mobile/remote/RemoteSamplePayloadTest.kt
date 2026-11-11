@@ -13,6 +13,15 @@ import org.junit.Test
 import kotlin.math.abs
 
 class RemoteSamplePayloadTest {
+    @Test fun derivedEstimateDoesNotReplaceLegacyAngles() {
+        val samples=mapOf(
+            "vehicle.attitude" to Sample("vehicle.attitude",1,null,listOf(10.0,20.0,30.0)),
+            "estimate.attitude" to Sample("estimate.attitude",2,null,listOf(1.0,2.0,3.0),"experimental"))
+        val p=RemoteSamplePayload.build(1,null,1,"test",samples,null,null,null)
+        assertEquals(10.0,p.getJSONObject("vehicle.attitude").getDouble("roll"),0.0)
+        assertEquals(1.0,p.getJSONObject("estimate.attitude").getDouble("roll"),0.0)
+        assertEquals(2L,p.getJSONObject("estimate.attitude").getLong("measurementNanos"))
+    }
     @Test
     fun fullSnapshotKeepsCoreAndVehicleNestedOnly() {
         val samples = mapOf(

@@ -19,11 +19,17 @@ import androidx.compose.ui.unit.dp
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun RecordsScreen(root: File, busy: Boolean, status: String, imported: VboData?, onBack: () -> Unit,
  onDelete: (File) -> Unit, onOpen: () -> Unit, onCsv: (File) -> Unit, onReplay: (File) -> Unit, onVbo: (File) -> Unit, onKml: (File) -> Unit, onCloseFile: () -> Unit) {
  var refresh by remember { mutableIntStateOf(0) }
+ val scope=rememberCoroutineScope()
+ var recomputing by remember { mutableStateOf(false) }
+ var recomputeStatus by remember { mutableStateOf("") }
  var opened by remember { mutableStateOf<File?>(null) }
  val sessions = remember(refresh, Live.running, busy) { File(root, "sessions").listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList() }
  Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -32,6 +38,7 @@ fun RecordsScreen(root: File, busy: Boolean, status: String, imported: VboData?,
   Button(onClick = onOpen, enabled = !busy) { Text("打开 VBO 文件") }
   if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
   if(status.isNotEmpty()) Text(status)
+  if(recomputeStatus.isNotEmpty()) Text(recomputeStatus)
   if(imported != null) {
    Text("离线 VBO · 不代表手机实时数据")
    if(imported.track.isNotEmpty()) TrackMap(Modifier.fillMaxWidth().height(280.dp), imported.track)
@@ -72,6 +79,16 @@ fun RecordsScreen(root: File, busy: Boolean, status: String, imported: VboData?,
      TextButton(enabled = !busy && !Live.running && closed, onClick = { onVbo(session) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) { Text("VBO") }
      TextButton(enabled = !busy && !Live.running && closed, onClick = { onKml(session) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) { Text("KML") }
      TextButton(enabled = !busy && !Live.running && closed, onClick = { onCsv(session) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) { Text("CSV") }
+     TextButton(enabled = !busy && !recomputing && !Live.running && closed, onClick = {
+      recomputing=true
+      scope.launch {
+       recomputeStatus=withContext(Dispatchers.IO) {
+        runCatching { AttitudeRecompute.export(session); "姿态重算完成：attitude-recomputed.csv（原记录未改动）" }
+         .getOrElse { "不能重算：${it.message}" }
+       }
+       recomputing=false
+      }
+     }) { Text("重算") }
     }
    }
    }

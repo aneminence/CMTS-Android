@@ -889,7 +889,7 @@ private fun MainCaptureScreen(
 private fun RemoteEndpointRow() {
  val context = LocalContext.current
  val store = remember { RemoteIdentityStore(context) }
- val deviceId = remember { store.deviceId }
+ var showDetails by remember { mutableStateOf(false) }
  var running by remember { mutableStateOf(RemoteBridge.isRunning()) }
  var clients by remember { mutableStateOf(0) }
  var subscribers by remember { mutableStateOf(0) }
@@ -901,6 +901,11 @@ private fun RemoteEndpointRow() {
    clients = RemoteBridge.connectedClients()
    subscribers = RemoteBridge.subscribers()
    discovery = RemoteBridge.discoveryStatus()
+   kotlinx.coroutines.delay(1000)
+  }
+ }
+ LaunchedEffect(showDetails) {
+  if (showDetails) while (true) {
    addresses = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { LocalIpv4.enumerateCandidates() }
    kotlinx.coroutines.delay(1000)
   }
@@ -916,30 +921,36 @@ private fun RemoteEndpointRow() {
   cm.setPrimaryClip(ClipData.newPlainText("cmts-pairing-uri", uri))
   Toast.makeText(context, "已复制连接串", Toast.LENGTH_SHORT).show()
  }
- Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-  Text(
-   "远程 WS ${if (running) "开" else "关"} · :${RemoteIdentityStore.DEFAULT_PORT}${RemoteIdentityStore.WS_PATH}",
-   style = MaterialTheme.typography.labelSmall,
-   color = Color(0xFFD4AF37),
-  )
-  Text(
-   "${store.deviceModel} · 无需配对",
-   style = MaterialTheme.typography.labelSmall,
-   modifier = Modifier.clickable(onClick = { copyConnectionString() }),
-  )
-  com.cmts.mobile.remote.ConnectionQrButton(store)
-  Text("热点状态：系统未提供可靠状态，请在系统设置确认", style = MaterialTheme.typography.labelSmall)
-  Text("设备发现：$discovery · 已授权客户端 $clients · 订阅 $subscribers", style = MaterialTheme.typography.labelSmall)
-  addresses.forEach { Text("本机地址 ${it.iface}: ${it.host}:8787（需电脑验证可达）", style = MaterialTheme.typography.labelSmall) }
-  TextButton(onClick = {
-   store.remoteEnabled = !running
-   if (running) RemoteBridge.stop() else RemoteBridge.start(context)
-   running = RemoteBridge.isRunning()
-  }) { Text(if (running) "停止通信服务" else "启动通信服务") }
-  Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-   TextButton(onClick = { copyConnectionString() }) { Text("复制连接串") }
+ Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+  val connectionStatus = when {
+   !running -> "通信已关闭"
+   subscribers > 0 -> "已连接 · 已订阅数据"
+   clients > 0 -> "已连接"
+   else -> "未连接"
   }
+  Text("电脑连接：$connectionStatus", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+  TextButton(onClick = { showDetails = true }) { Text("连接详情") }
  }
+ if (showDetails) AlertDialog(
+  onDismissRequest = { showDetails = false },
+  title = { Text("连接详情") },
+  text = {
+   Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Text("${store.deviceModel} · Windows 可自动发现，无需配对")
+    Text("设备发现：$discovery · 已授权客户端 $clients · 订阅 $subscribers", style = MaterialTheme.typography.labelSmall)
+    addresses.forEach { Text("${it.iface}: ${it.host}:${RemoteIdentityStore.DEFAULT_PORT}", style = MaterialTheme.typography.labelSmall) }
+    if (addresses.isEmpty()) Text("暂无可用网络地址")
+    com.cmts.mobile.remote.ConnectionQrButton(store)
+    TextButton(onClick = { copyConnectionString() }) { Text("复制连接串") }
+    TextButton(onClick = {
+     store.remoteEnabled = !running
+     if (running) RemoteBridge.stop() else RemoteBridge.start(context)
+     running = RemoteBridge.isRunning()
+    }) { Text(if (running) "停止通信服务" else "启动通信服务") }
+   }
+  },
+  confirmButton = { TextButton(onClick = { showDetails = false }) { Text("关闭") } },
+ )
 }
 @Composable
 private fun ReplaySeekBar(history: ReplayData, index: Int, pause: () -> Unit, seek: (Int) -> Unit) {

@@ -14,6 +14,7 @@ internal data class ReplayData(val session: File, val frames: List<ReplayFrame>,
 
 /** Sources loaded into replay frames (rotation vector is needed for gravity-removed linear accel). */
 internal val REPLAY_SOURCES = setOf(
+ "estimate.attitude", "estimate.status", "estimate.quaternion", "estimate.initial", "estimate.bias",
  "phone.pressure","phone.satellites","phone.gps","phone.rotation_vector",
  "vehicle.accel","vehicle.gyro","vehicle.attitude",
 )

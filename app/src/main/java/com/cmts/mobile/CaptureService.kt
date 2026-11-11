@@ -27,6 +27,7 @@ internal data class MountZero(
 )
 
 object Live {
+    @Volatile internal var attitudeCalibrationRequest = 0
     val emulator = Build.FINGERPRINT.startsWith("generic") || Build.FINGERPRINT.contains("emulator") ||
         Build.MODEL.contains("sdk_gphone") || Build.HARDWARE in listOf("goldfish", "ranchu")
     /** True while a normal recording session is writing samples.csv. */
@@ -545,6 +546,23 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         File(folder, "metadata.json").writeText(
             JSONObject()
                 .put("schema", 1)
+                .put("vehicleEstimator", JSONObject()
+                    .put("version", VehicleAttitudeEstimator.VERSION)
+                    .put("frame", "fixed FLU=deviceY,-deviceX,deviceZ; wxyz vehicle-to-local-level; arbitrary yaw; ZYX Euler degrees")
+                    .put("parameters", JSONObject()
+                        .put("gravityMps2",9.80665).put("gainPerSecond",1.0)
+                        .put("normRejectMps2",0.3).put("innovationRejectDegrees",3.0)
+                        .put("jerkRejectMps3",5.0).put("rejectHoldSeconds",1.0)
+                        .put("weightRecoverySeconds",1.0).put("maxGyroGapSeconds",0.2)
+                        .put("maxAccelAgeSeconds",0.1).put("gyroSaturationRadS",30.0)
+                        .put("maxGnssAgeSeconds",1.5).put("gnssMotionMps2",0.15)
+                        .put("courseMinSpeedMps",2.0).put("courseMaxAccuracyDegrees",10.0)
+                        .put("speedMaxAccuracyMps",0.3).put("parkMaxSpeedMps",0.2)
+                        .put("parkSeconds",3.0).put("parkMinSamples",100)
+                        .put("turnRiskRadS",0.03))
+                    .put("quantitativeCompensation",false)
+                    .put("antennaLeverArmMeters",JSONObject.NULL)
+                    .put("recompute", "requires complete raw history including parked calibration and estimate.context; source code version fixes parameters"))
                 .put("sessionId", folder!!.name)
                 .put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
                 .put("startedUtcMs", System.currentTimeMillis())
@@ -628,7 +646,16 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         stopSelf()
     }
 
+    private val attitudePipeline = AttitudePipeline()
     private fun accept(sample: Sample) {
+        if (!sample.source.startsWith("estimate.")) {
+            if (sample.source == "phone.accel" || sample.source == "phone.gyro" || sample.source == "phone.gps") {
+                accept(Sample("estimate.context", sample.nanos, null,
+                    listOf(Live.attitudeCalibrationRequest.toDouble(), if (Live.gnssSource == GnssSource.PHONE) 1.0 else 0.0),
+                    "${VehicleAttitudeEstimator.VERSION};${sample.source};fixed_FLU"))
+            }
+            attitudePipeline.observe(sample, Live.attitudeCalibrationRequest, Live.gnssSource == GnssSource.PHONE).forEach { accept(it) }
+        }
         try {
             if (recordHold && filesDir.usableSpace < 10 * 1024 * 1024) error("剩余空间不足 10 MiB")
             val labeled = if (Live.emulator) sample.copy(quality = "SIMULATED_${sample.quality}") else sample
@@ -759,6 +786,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                     if (l.hasAccuracy()) l.accuracy.toDouble() else null,
                     if (l.hasVerticalAccuracy()) l.verticalAccuracyMeters.toDouble() else null,
                     speedAccuracy,
+                    if (l.hasBearingAccuracy()) l.bearingAccuracyDegrees.toDouble() else null,
                 ),
                 if (l.isFromMockProvider) "MOCK" else "provider_reported",
             ),

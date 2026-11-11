@@ -99,6 +99,15 @@ internal object RemoteSamplePayload {
         putVectorValues(payload, "vehicle.accel", vehicleAccelSample != null, nestedAccel, ACCEL_XYZ)
         putVectorValues(payload, "vehicle.gyro", vehicleGyroSample != null, nestedGyro, GYRO_XYZ)
         putVectorValues(payload, "vehicle.attitude", vehicleAttitudeSample != null, nestedAttitude, VEHICLE_ATTITUDE)
+        // Additive, independent channel: never replaces legacy vehicle attitude or core fields.
+        samples["estimate.attitude"]?.let { estimate ->
+            putVector(payload, "estimate.attitude", estimate, VEHICLE_ATTITUDE)
+            payload.getJSONObject("estimate.attitude")
+                .put("measurementNanos", estimate.nanos)
+                .put("quality", estimate.quality)
+        }
+        putVector(payload, "estimate.status", samples["estimate.status"],
+            listOf("accWeight", "accAgeSeconds", "trustedAgeSeconds", "gnssAgeSeconds"))
         return payload
     }
 

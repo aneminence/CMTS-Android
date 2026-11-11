@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,7 +49,40 @@ internal fun displayVehicleAxes(zero: MountZero, samples: Map<String, Sample>): 
 
 @Composable
 internal fun Dashboard(replay: ReplayFrame? = null, landscape: Boolean = false) {
- if (landscape) DashboardLandscape(replay) else DashboardPortrait(replay)
+ if(landscape) {
+  Row(Modifier.fillMaxSize(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+   Column(Modifier.weight(0.38f).fillMaxHeight().verticalScroll(rememberScrollState())) { EstimatePanel(replay) }
+   Box(Modifier.weight(0.62f).fillMaxHeight()) { DashboardLandscape(replay) }
+  }
+ } else {
+  EstimatePanel(replay)
+  DashboardPortrait(replay)
+ }
+}
+
+@Composable
+private fun EstimatePanel(replay: ReplayFrame?) {
+ var show by rememberSaveable { mutableStateOf(false) }
+ var tick by remember { mutableIntStateOf(0) }
+ LaunchedEffect(Unit) { while(true) { delay(1000); tick++ } }
+ val samples = replay?.samples ?: Live.samples
+ Row(verticalAlignment = Alignment.CenterVertically) {
+  Switch(checked=show,onCheckedChange={show=it})
+  Text("车辆姿态估算 · 实验对照")
+ }
+ if (show) {
+  val s=samples["estimate.attitude"]
+  val status=samples["estimate.status"]
+  val fresh=isFresh(s,replay?.nanos ?: tick.let { SystemClock.elapsedRealtimeNanos() },replay!=null || Live.serviceAlive)
+  Text("Roll ${dashboardValue(if(fresh) s?.values?.getOrNull(0) else null)}° / Pitch ${dashboardValue(if(fresh) s?.values?.getOrNull(1) else null)}°")
+  Text(if(!fresh && s!=null) "降级：姿态数据已过期" else status?.quality ?: "初始化：等待停车校准")
+  Text("加计年龄 ${dashboardValue(status?.values?.getOrNull(1))}s；GNSS年龄 ${dashboardValue(status?.values?.getOrNull(3))}s")
+  Text("加速度权重 ${dashboardValue(status?.values?.getOrNull(0),digits=2)}；距可信校正 ${dashboardValue(status?.values?.getOrNull(2))}s")
+  Text("固定安装：屏幕朝上、顶部朝车头。Yaw无长期绝对参考。下方保留原系统姿态；原归零不改变本估算。")
+  if(replay==null) OutlinedButton(enabled=Live.serviceAlive,onClick={Live.attitudeCalibrationRequest++}) {
+   Text("确认已停车：校准陀螺零偏与初始化")
+  }
+ }
 }
 
 @Composable
