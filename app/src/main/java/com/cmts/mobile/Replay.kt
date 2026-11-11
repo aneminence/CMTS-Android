@@ -94,8 +94,8 @@ internal object Replay {
     val lat=sample.values.getOrNull(0); val lon=sample.values.getOrNull(1)
     if(lat != null && lon != null && lat in -90.0..90.0 && lon in -180.0..180.0) track.add(TrackPoint(lat,lon,t))
    }
-   if(last < 0 || t-last >= 100_000_000L) {
-    require(frames.size < 72000) { "记录过长，当前回放最多约两小时，请分段" }
+   if(last < 0 || source == "phone.gps" || t-last >= 50_000_000L) {
+    require(frames.size < 288000) { "记录过长，当前回放最多约两小时，请分段" }
     rawLatest.forEach { (source, raw) -> latest[source] = parse(raw) }
     frames.add(ReplayFrame(t,latest.toMap(),mountZero)); last=t
    }

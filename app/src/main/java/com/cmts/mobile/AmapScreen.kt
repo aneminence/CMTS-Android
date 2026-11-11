@@ -83,12 +83,21 @@ private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, co
   view.map.setOnMapTouchListener { follow = false }
   onDispose { owner.lifecycle.removeObserver(observer); view.onPause(); view.onDestroy() }
  }
+ val converted = remember(view) { mutableMapOf<TrackPoint, LatLng>() }
+ val overlays = remember(view) { arrayOfNulls<Any>(2) }
  LaunchedEffect(track, follow, trackColor) {
-  val points = track.map { CoordinateConverter(context).from(CoordinateConverter.CoordType.GPS).coord(LatLng(it.latitude,it.longitude)).convert() }
-  view.map.clear()
-  if(points.size > 1) view.map.addPolyline(PolylineOptions().addAll(points).color(trackColor).width(5f))
+  converted.keys.retainAll(track.toSet())
+  val points = track.map { point -> converted.getOrPut(point) { CoordinateConverter(context).from(CoordinateConverter.CoordType.GPS).coord(LatLng(point.latitude,point.longitude)).convert() } }
+  val line = overlays[0] as? Polyline
+  if (points.size > 1) {
+   if (line == null) overlays[0] = view.map.addPolyline(PolylineOptions().addAll(points).color(trackColor).width(5f))
+   else { line.points = points; line.color = trackColor }
+  } else { line?.remove(); overlays[0] = null }
+  if (points.isEmpty()) { (overlays[1] as? Marker)?.remove(); overlays[1] = null }
   points.lastOrNull()?.let {
-   view.map.addMarker(MarkerOptions().position(it).title("GNSS"))
+   val marker = overlays[1] as? Marker
+   if (marker == null) overlays[1] = view.map.addMarker(MarkerOptions().position(it).title("GNSS"))
+   else marker.position = it
    if(follow) view.map.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 16f))
   }
  }

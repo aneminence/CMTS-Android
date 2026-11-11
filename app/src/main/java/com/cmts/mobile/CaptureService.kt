@@ -689,9 +689,9 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 }
             }
             latestRates[sample.source] = rate
-            // Raw samples at sensor rate; Compose capped ~10 Hz.
+            // Publish every GNSS fix; other sensors refresh at up to 20 Hz.
             val now = SystemClock.elapsedRealtimeNanos()
-            if (now - lastUiPostNanos >= 100_000_000L) {
+            if (sample.source == "phone.gps" || now - lastUiPostNanos >= 50_000_000L) {
                 lastUiPostNanos = now
                 val sampleSnapshot = latestSamples.toMap()
                 val rateSnapshot = latestRates.toMap()

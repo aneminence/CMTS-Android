@@ -4,6 +4,19 @@ import org.junit.Assert.*
 import java.nio.file.Files
 import java.io.File
 class ReplayTest {
+ @Test fun preservesEveryTwentyHzGnssFix() {
+  val d=Files.createTempDirectory("replay20hz").toFile()
+  try {
+   File(d,"closed.marker").writeText("")
+   File(d,"samples.csv").writeText("header\n" + (0..20).joinToString("\n") { i ->
+    "$i,phone.gps,${i * 50_000_000L},0,,reported,39,117,0,$i"
+   })
+   val r=Replay.read(d)
+   assertEquals(21,r.frames.size)
+   assertEquals(r.track.map { it.nanos },r.frames.map { it.nanos })
+   r.frames.forEachIndexed { i, f -> assertEquals(i.toDouble(), f.samples["phone.gps"]!!.values[3]!!,0.0) }
+  } finally { d.deleteRecursively() }
+ }
  @Test fun preservesImuAndCoordinatesWithoutFutureSamples() {
   val d=Files.createTempDirectory("replay").toFile()
   try {
