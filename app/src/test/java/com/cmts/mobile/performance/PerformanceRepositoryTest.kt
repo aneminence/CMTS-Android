@@ -87,4 +87,16 @@ class PerformanceRepositoryTest {
         assertEquals(config.quality.maxSampleGapNs, loaded.quality.maxSampleGapNs)
         assertEquals(config.algorithmVersion, loaded.algorithmVersion)
     }
+
+    @Test
+    fun discardAttemptRemovesOnlyThatAttemptDir() {
+        val repo = PerformanceRepository(temp.newFolder("perf-discard"))
+        val config = PerformanceConfig(PerformanceMode.ACCEL_0_TO_X, 0.0, 36.0)
+        val keep = repo.createAttempt(config)
+        val drop = repo.createAttempt(config)
+        assertTrue(repo.discardAttempt(drop))
+        assertFalse(drop.dir.exists())
+        assertTrue(keep.dir.exists())
+        assertEquals(listOf(keep.id), repo.listAttempts().map { it.id })
+    }
 }

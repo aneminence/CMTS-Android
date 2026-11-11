@@ -87,7 +87,6 @@ fun PerformancePane(
         return
     }
 
-    val attempts = remember(historyRev, filesDir) { PerformanceController.listAttempts(filesDir) }
     val active = snap.phase !in setOf(
         PerformancePhase.Idle,
         PerformancePhase.Completed,
@@ -153,24 +152,8 @@ fun PerformancePane(
             Button(
                 onClick = {
                     error = null
-                    val configs = mutableListOf<PerformanceConfig>()
-                    for (d in drafts.filter { it.selected }) {
-                        val start = d.startKmh.toDoubleOrNull()
-                        val end = d.endKmh.toDoubleOrNull()
-                        if (start == null || end == null) {
-                            error = "请为已选段填写有效阈值"
-                            return@Button
-                        }
-                        val cfg = runCatching {
-                            PerformanceConfig(mode = d.mode, startSpeedKmh = start, endSpeedKmh = end)
-                        }.getOrElse {
-                            error = "${d.mode.shortLabel()}: ${it.message}"
-                            return@Button
-                        }
-                        configs.add(cfg)
-                    }
-                    if (configs.isEmpty()) {
-                        error = "请至少勾选一个测试段"
+                    val configs = configsFromDrafts(drafts).getOrElse {
+                        error = it.message
                         return@Button
                     }
                     onEnsureCapture()
@@ -189,6 +172,12 @@ fun PerformancePane(
             TextButton(onClick = { showHistory = true }) { Text("详情") }
         }
 
+        Text(
+            if (PerformanceController.stayArmed) "连续待命：开 · 每轮结束自动待命下一轮，取消后关闭"
+            else "连续待命：关 · 点「待命」开启",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (PerformanceController.stayArmed) Champagne else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
     }
     val results: @Composable () -> Unit = {
@@ -197,14 +186,9 @@ fun PerformancePane(
         StatusCard(snap, segmentSnaps)
     }
     val scores: @Composable () -> Unit = {
-        val tableRows = remember(sessionResults, attempts) {
-            val ids = sessionResults.map { it.id }.toSet()
-            sessionResults + attempts.filter {
-                it.latestPhase == PerformancePhase.Completed && it.id !in ids
-            }
-        }
+        // Live table = current / just-finished run only; older runs live behind 详情 (history).
         ResultsTable(
-            attempts = tableRows,
+            attempts = sessionResults,
             showTitle = !landscape,
             onOpen = { detail = it; showHistory = true },
         )
@@ -502,9 +486,8 @@ private fun PerformanceHistoryPane(
 
 @Composable
 internal fun CompactPerformanceResults(filesDir: File) {
- val recent = PerformanceController.sessionResults
- val history = remember(filesDir, PerformanceController.historyRevision) { PerformanceController.listAttempts(filesDir) }
- val rows = remember(recent, history) { (recent + history.filter { it.latestPhase == PerformancePhase.Completed }).distinctBy { it.id } }
+ // Current / just-finished run only (same as the live 成绩 table); history stays behind 详情.
+ val rows = PerformanceController.sessionResults
  Column(Modifier.fillMaxSize().padding(6.dp)) {
   Text("性能成绩", color = Champagne)
   Column(Modifier.verticalScroll(rememberScrollState())) {

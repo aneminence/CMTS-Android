@@ -29,6 +29,26 @@ fun defaultSegmentDrafts(): List<SegmentDraft> = listOf(
     SegmentDraft(PerformanceMode.BRAKE_X_TO_Y, true, "100", "60"),
     SegmentDraft(PerformanceMode.BRAKE_X_TO_0, true, "60", "0"),
 )
+/** Build engine configs from the selected drafts (same validation as the 待命 button). */
+internal fun configsFromDrafts(drafts: List<SegmentDraft>): Result<List<PerformanceConfig>> {
+    val configs = mutableListOf<PerformanceConfig>()
+    for (d in drafts.filter { it.selected }) {
+        val start = d.startKmh.toDoubleOrNull()
+        val end = d.endKmh.toDoubleOrNull()
+        if (start == null || end == null) {
+            return Result.failure(IllegalArgumentException("请为已选段填写有效阈值"))
+        }
+        val cfg = runCatching {
+            PerformanceConfig(mode = d.mode, startSpeedKmh = start, endSpeedKmh = end)
+        }.getOrElse {
+            return Result.failure(IllegalArgumentException("${d.mode.shortLabel()}: ${it.message}"))
+        }
+        configs.add(cfg)
+    }
+    if (configs.isEmpty()) return Result.failure(IllegalArgumentException("请至少勾选一个测试段"))
+    return Result.success(configs)
+}
+
 object PerformanceController {
     private val main = Handler(Looper.getMainLooper())
     private val lock = Any()
@@ -49,6 +69,8 @@ object PerformanceController {
         val engine: PerformanceEngine,
         val handle: AttemptHandle,
         var finished: Boolean = false,
+        /** True once this segment reached Running / FinishCandidate / Completed. */
+        var started: Boolean = false,
     )
 
     @Volatile private var repository: PerformanceRepository? = null
@@ -77,12 +99,27 @@ object PerformanceController {
     var drafts by mutableStateOf(defaultSegmentDrafts())
         private set
 
-    /** Completed scores from the current arm session, appended one-by-one as each segment finishes. */
+    /**
+     * Live 成绩 table: completed scores of the current (or just-finished) run only, appended as each
+     * segment finishes. Cleared when the next run actually starts, not when it is (re-)armed.
+     */
     var sessionResults by mutableStateOf<List<AttemptSummary>>(emptyList())
         private set
 
-    /** Accrued under [lock]; copied to [sessionResults] on main to avoid lost updates. */
-    private val sessionResultsAcc = mutableListOf<AttemptSummary>()
+    /**
+     * Continuous / stay-armed mode (default on, persisted). After a run finishes the same selected
+     * segments are re-armed automatically. 取消 turns it off; 待命 turns it back on.
+     */
+    var stayArmed by mutableStateOf(true)
+        private set
+
+    val isArmed: Boolean get() = armed.get()
+
+    /** Score table + re-arm bookkeeping; accessed under [lock], rows copied to [sessionResults] on main. */
+    private val cycle = RunCycle<AttemptSummary>(stayArmed = true)
+
+    /** Configs of the current arm, reused for automatic re-arm. */
+    @Volatile private var armedConfigs: List<PerformanceConfig> = emptyList()
 
     private var settingsFile: File? = null
 
@@ -98,6 +135,9 @@ object PerformanceController {
         if (!file.exists()) return
         runCatching {
             val o = org.json.JSONObject(file.readText())
+            val stay = o.optBoolean("stayArmed", true)
+            stayArmed = stay
+            synchronized(lock) { cycle.setStayArmed(stay) }
             val arr = o.getJSONArray("drafts")
             val loaded = mutableListOf<SegmentDraft>()
             for (i in 0 until arr.length()) {
@@ -115,9 +155,21 @@ object PerformanceController {
 
     fun updateDrafts(next: List<SegmentDraft>, filesDir: File? = null) {
         drafts = next
+        saveSettings(filesDir)
+    }
+
+    private fun setStayArmed(value: Boolean, filesDir: File? = null) {
+        synchronized(lock) { cycle.setStayArmed(value) }
+        main.post { stayArmed = value }
+        saveSettings(filesDir, stayOverride = value)
+    }
+
+    private fun saveSettings(filesDir: File? = null, stayOverride: Boolean? = null) {
         if (settingsFile == null && filesDir != null) {
             settingsFile = File(filesDir, "performance/ui_settings.json")
         }
+        val next = drafts
+        val stay = stayOverride ?: synchronized(lock) { cycle.stayArmed }
         val file = settingsFile ?: return
         runCatching {
             file.parentFile?.mkdirs()
@@ -131,7 +183,13 @@ object PerformanceController {
                         .put("endKmh", d.endKmh),
                 )
             }
-            file.writeText(org.json.JSONObject().put("schema", 1).put("drafts", arr).toString(2))
+            file.writeText(
+                org.json.JSONObject()
+                    .put("schema", 1)
+                    .put("drafts", arr)
+                    .put("stayArmed", stay)
+                    .toString(2),
+            )
         }
     }
 
@@ -178,13 +236,14 @@ object PerformanceController {
                     publishMessage("速度样本写入失败: ${e.message}")
                 }
                 val snap = seg.engine.onEvent(EngineEvent.Sample(sample))
+                observeLocked(seg, snap.phase)
                 if (isTerminal(snap.phase)) {
                     seg.finished = true
                     persistSegment(seg, snap.result)
                 }
             }
             publishLocked()
-            maybeReleaseLocked()
+            maybeFinishRoundLocked()
         }
     }
 
@@ -195,17 +254,22 @@ object PerformanceController {
             for (seg in segments) {
                 if (seg.finished) continue
                 val snap = seg.engine.onEvent(EngineEvent.Watchdog(now))
+                observeLocked(seg, snap.phase)
                 if (isTerminal(snap.phase)) {
                     seg.finished = true
                     persistSegment(seg, snap.result)
                 }
             }
             publishLocked()
-            maybeReleaseLocked()
+            maybeFinishRoundLocked()
         }
     }
 
-    /** Arm one or more segments; all share the same GNSS stream until each finishes or cancel. */
+    /**
+     * Arm one or more segments; all share the same GNSS stream until each finishes or cancel.
+     * Arming turns continuous mode on. The live score table is NOT cleared here; it is cleared when
+     * the new run actually starts (see [RunCycle]).
+     */
     fun arm(filesDir: File, configs: List<PerformanceConfig>): Boolean {
         if (configs.isEmpty()) {
             publishMessage("请至少选择一个测试段")
@@ -216,6 +280,38 @@ object PerformanceController {
             return false
         }
         val repo = ensureRepo(filesDir)
+        setStayArmed(true, filesDir)
+        synchronized(lock) {
+            startSegmentsLocked(repo, configs)
+            cycle.onArmed()
+        }
+        armedConfigs = configs
+        armed.set(true)
+        holdCapture = true
+        watchdogHandler.removeCallbacks(watchdogRunnable)
+        watchdogHandler.post(watchdogRunnable)
+        synchronized(lock) { publishLocked() }
+        val labels = configs.joinToString { "${it.mode.shortLabel()} ${trim(it.startSpeedKmh)}→${trim(it.endSpeedKmh)}" }
+        publishMessage("已待命（连续）· ${configs.size} 段：$labels")
+        return true
+    }
+
+    /**
+     * Auto-arm from the persisted segment drafts when continuous mode is on and nothing is armed.
+     * [ensureCapture] runs right before arming (same path as the 待命 button).
+     */
+    fun autoArmIfEnabled(filesDir: File, ensureCapture: () -> Unit): Boolean {
+        if (repository == null) loadSettings(filesDir)
+        if (!stayArmed || armed.get()) return false
+        val configs = configsFromDrafts(drafts).getOrElse {
+            publishMessage("连续待命未启动：${it.message}")
+            return false
+        }
+        ensureCapture()
+        return arm(filesDir, configs)
+    }
+
+    private fun startSegmentsLocked(repo: PerformanceRepository, configs: List<PerformanceConfig>) {
         val created = configs.map { cfg ->
             val h = repo.createAttempt(cfg)
             val eng = PerformanceEngine()
@@ -225,21 +321,21 @@ object PerformanceController {
         segments = created
         sampleSeq.set(0)
         if (captureSessionId == null) clockDomain = "perf:${created.first().handle.id}"
-        sessionResultsAcc.clear()
-        sessionResults = emptyList()
-        armed.set(true)
-        holdCapture = true
-        watchdogHandler.removeCallbacks(watchdogRunnable)
-        watchdogHandler.post(watchdogRunnable)
-        synchronized(lock) { publishLocked() }
-        val labels = configs.joinToString { "${it.mode.shortLabel()} ${trim(it.startSpeedKmh)}→${trim(it.endSpeedKmh)}" }
-        publishMessage("已待命 · ${configs.size} 段：$labels")
-        return true
+    }
+
+    private fun observeLocked(seg: LiveSegment, phase: PerformancePhase) {
+        if (phase in RunCycle.RUN_STARTED_PHASES) seg.started = true
+        if (cycle.observe(phase)) {
+            // New run began: drop the previous run's scores from the live table.
+            main.post { sessionResults = emptyList() }
+        }
     }
 
     fun arm(filesDir: File, config: PerformanceConfig): Boolean = arm(filesDir, listOf(config))
 
+    /** Stop the current run and turn continuous mode off until 待命 is tapped again. */
     fun cancel() {
+        setStayArmed(false)
         if (!armed.get()) return
         synchronized(lock) {
             for (seg in segments) {
@@ -249,7 +345,7 @@ object PerformanceController {
                 persistSegment(seg, snap.result ?: seg.engine.snapshot().result)
             }
             publishLocked()
-            releaseLocked("已取消")
+            releaseLocked("已取消 · 连续待命已关闭，点「待命」重新开启")
         }
     }
 
@@ -284,8 +380,8 @@ object PerformanceController {
                         latestDistanceMeters = result.distanceMeters,
                     )
                     // Accrue under lock, publish copy on main (one row at a time, no lost updates).
-                    sessionResultsAcc += summary
-                    val published = sessionResultsAcc.toList()
+                    cycle.onCompleted(summary)
+                    val published = cycle.rows
                     main.post { sessionResults = published }
                     publishMessage(
                         "出成绩 · ${seg.config.mode.shortLabel()} " +
@@ -301,12 +397,50 @@ object PerformanceController {
         }
     }
 
-    private fun maybeReleaseLocked() {
+    private fun maybeFinishRoundLocked() {
         if (segments.isNotEmpty() && segments.all { it.finished }) {
             val n = segments.size
             val ok = segments.count { it.engine.snapshot().phase == PerformancePhase.Completed }
-            releaseLocked("本轮结束 · 出成绩 $ok / $n 段")
+            val msg = "本轮结束 · 出成绩 $ok / $n 段"
+            when (cycle.onRoundFinished()) {
+                RunCycle.RoundAction.REARM -> rearmLocked(msg)
+                RunCycle.RoundAction.RELEASE -> releaseLocked(msg)
+            }
         }
+    }
+
+    /** Continuous mode: keep capture held and scores visible, arm the same configs again. */
+    private fun rearmLocked(msg: String) {
+        val repo = repository
+        val configs = armedConfigs.ifEmpty { segments.map { it.config } }
+        if (repo == null || configs.isEmpty()) {
+            releaseLocked(msg)
+            return
+        }
+        discardIdleSegmentsLocked(repo)
+        try {
+            startSegmentsLocked(repo, configs)
+        } catch (e: Exception) {
+            releaseLocked("$msg · 自动待命失败: ${e.message}")
+            return
+        }
+        cycle.onArmed()
+        publishLocked()
+        publishMessage("$msg · 已自动待命下一轮")
+    }
+
+    /**
+     * In continuous mode a segment that never started (e.g. waited past the arm timeout) would
+     * leave an empty Invalid attempt every round; drop those so 历史 is not flooded.
+     */
+    private fun discardIdleSegmentsLocked(repo: PerformanceRepository) {
+        var removed = false
+        for (seg in segments) {
+            if (seg.started) continue
+            if (seg.engine.snapshot().phase != PerformancePhase.Invalid) continue
+            removed = runCatching { repo.discardAttempt(seg.handle) }.getOrDefault(false) || removed
+        }
+        if (removed) main.post { historyRevision++ }
     }
 
     private fun releaseLocked(msg: String) {

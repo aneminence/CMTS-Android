@@ -195,6 +195,11 @@ class MainActivity : ComponentActivity() {
  private fun beginPerformanceCapture() {
   startForegroundService(CaptureService.acquireIntent(this, CaptureService.CLIENT_PERF))
  }
+ /** Default-on continuous scoring; only when location is already granted (no prompt on launch). */
+ private fun autoArmPerformance() {
+  if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
+  PerformanceController.autoArmIfEnabled(filesDir) { beginPerformanceCapture() }
+ }
  private fun releasePerformanceCaptureIfIdle() {
   if (!PerformanceController.holdCapture) {
    startService(CaptureService.releaseIntent(this, CaptureService.CLIENT_PERF))
@@ -315,6 +320,7 @@ class MainActivity : ComponentActivity() {
         else { pendingPerfCapture = true; permissions.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
        },
        onReleasePerformanceCaptureIfIdle = { releasePerformanceCaptureIfIdle() },
+       onAutoArmPerformance = { autoArmPerformance() },
       )
      }
     }
@@ -357,10 +363,13 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
   Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2)
   Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) { Text(if (Live.running) "停止并保存记录" else "开始记录") }
   if (frame == null) GnssSourceSwitch(onSelect = onSelectGnssSource)
-  var tick by remember { mutableLongStateOf(SystemClock.elapsedRealtimeNanos()) }
-  LaunchedEffect(Unit) { while(true) { tick = SystemClock.elapsedRealtimeNanos(); delay(1000) } }
+  // Same now-source as the expanded Dashboard: read the clock on every recomposition (driven by
+  // Live.samples, ~10 Hz UI post) so fresh samples are never older-than-now rejected. The 1 s
+  // heartbeat only ages out stale readings when no new samples arrive.
+  var heartbeat by remember { mutableIntStateOf(0) }
+  LaunchedEffect(Unit) { while(true) { delay(1000); heartbeat++ } }
   val samples = frame?.samples ?: Live.samples
-  val now = frame?.nanos ?: tick
+  val now = frame?.nanos ?: heartbeat.let { SystemClock.elapsedRealtimeNanos() }
   val gps = samples["phone.gps"]
   val sat = samples["phone.satellites"]
   val live = frame != null || Live.running || Live.serviceAlive
@@ -435,8 +444,14 @@ private fun MainCaptureScreen(
  filesDir: java.io.File,
  onEnsurePerformanceCapture: () -> Unit,
  onReleasePerformanceCaptureIfIdle: () -> Unit,
+ onAutoArmPerformance: () -> Unit = {},
 ) {
  val frame = history?.frames?.getOrNull(replayIndex)
+ // Continuous performance scoring is default-on: arm the selected segments once the live capture UI
+ // is shown. Leaving the performance page / collapsing the sheet never cancels it; only 取消 does.
+ val liveUi = history == null
+ val stayArmed = PerformanceController.stayArmed
+ LaunchedEffect(liveUi, stayArmed) { if (liveUi && stayArmed) onAutoArmPerformance() }
  LaunchedEffect(playing, history, replaySpeed) {
   val wallStart = SystemClock.elapsedRealtimeNanos()
   val dataStart = frame?.nanos ?: 0L
@@ -495,10 +510,11 @@ private fun MainCaptureScreen(
   val dashScroll = rememberScrollState()
   @Composable
   fun SummaryGauges() {
-   var summaryClock by remember { mutableLongStateOf(SystemClock.elapsedRealtimeNanos()) }
-   LaunchedEffect(Unit) { while(true) { summaryClock = SystemClock.elapsedRealtimeNanos(); delay(1000) } }
+   // Same now-source as the expanded Dashboard (live clock per recomposition, 1 s heartbeat).
+   var summaryHeartbeat by remember { mutableIntStateOf(0) }
+   LaunchedEffect(Unit) { while(true) { delay(1000); summaryHeartbeat++ } }
    val summarySamples = frame?.samples ?: Live.samples
-   val summaryNow = frame?.nanos ?: summaryClock
+   val summaryNow = frame?.nanos ?: summaryHeartbeat.let { SystemClock.elapsedRealtimeNanos() }
    val live = frame != null || Live.running || Live.serviceAlive
    // Hold last good readout so brief GNSS gaps / map identity swaps do not flash to em-dash.
    val lastGood = remember { mutableStateMapOf<String, String>() }

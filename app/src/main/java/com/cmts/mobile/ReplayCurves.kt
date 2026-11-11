@@ -18,17 +18,58 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-private data class Channel(val label: String, val source: String, val axis: Int, val scale: Double = 1.0)
-private val channels = listOf(Channel("速度 km/h","phone.gps",3,3.6), Channel("俯仰 °","vehicle.attitude",1),
- Channel("侧倾 °","vehicle.attitude",0)) + listOf("X","Y","Z").mapIndexed { i, axis -> Channel("加速度 $axis m/s²","vehicle.accel",i) }
+/** How a replay curve reads its value; vehicle kinds go through [displayVehicleAxes] like Dashboard. */
+internal enum class ChannelKind { RAW, ACCEL, GYRO, ATTITUDE }
+
+/** One replay curve channel. Labels / units / scales match the live Dashboard. */
+internal data class ReplayChannel(
+ val label: String,
+ val source: String,
+ val axis: Int,
+ val scale: Double = 1.0,
+ val kind: ChannelKind = ChannelKind.RAW,
+)
+
+private const val RAD_TO_DEG = 180.0 / Math.PI
+
+internal val replayChannels: List<ReplayChannel> = listOf(
+ ReplayChannel("速度 km/h", "phone.gps", 3, 3.6),
+ ReplayChannel("高度 m", "phone.gps", 2),
+ ReplayChannel("航向 °", "phone.gps", 4),
+ ReplayChannel("气压 mbar", "phone.pressure", 0),
+ ReplayChannel("卫星 可见 颗", "phone.satellites", 0),
+ ReplayChannel("卫星 定位 颗", "phone.satellites", 1),
+ // Attitude axis order = Dashboard: 0 横滚(侧倾) X, 1 俯仰 Y, 2 偏航 Z.
+ ReplayChannel("横滚(侧倾) X °", "vehicle.attitude", 0, kind = ChannelKind.ATTITUDE),
+ ReplayChannel("俯仰 Y °", "vehicle.attitude", 1, kind = ChannelKind.ATTITUDE),
+ ReplayChannel("偏航 Z °", "vehicle.attitude", 2, kind = ChannelKind.ATTITUDE),
+) + listOf("X", "Y", "Z").mapIndexed { i, a -> ReplayChannel("线加速度 $a m/s²", "vehicle.accel", i, kind = ChannelKind.ACCEL) } +
+ listOf("X", "Y", "Z").mapIndexed { i, a -> ReplayChannel("角速度 $a °/s", "vehicle.gyro", i, RAD_TO_DEG, ChannelKind.GYRO) }
+
+/**
+ * Value of [channel] at [frame], with the same freshness rule (≤3 s, not in the future) and the same
+ * vehicle-axis transform (gravity-removed accel, saved install zero) as the replay Dashboard.
+ */
+internal fun replayChannelValue(channel: ReplayChannel, frame: ReplayFrame): Double? {
+ val samples = frame.samples
+ val now = frame.nanos
+ fun fresh(source: String) = isFresh(samples[source], now, true)
+ return when (channel.kind) {
+  ChannelKind.RAW -> if (fresh(channel.source)) samples[channel.source]?.values?.getOrNull(channel.axis)?.times(channel.scale) else null
+  ChannelKind.ACCEL -> if (fresh("vehicle.accel") && (fresh("phone.rotation_vector") || fresh("vehicle.attitude")))
+   displayVehicleAxes(frame.mountZero, samples).accel?.getOrNull(channel.axis)?.times(channel.scale) else null
+  ChannelKind.GYRO -> if (fresh("vehicle.gyro")) displayVehicleAxes(frame.mountZero, samples).gyro?.getOrNull(channel.axis)?.times(channel.scale) else null
+  ChannelKind.ATTITUDE -> if (fresh("vehicle.attitude")) displayVehicleAxes(frame.mountZero, samples).attitude?.getOrNull(channel.axis)?.times(channel.scale) else null
+ }?.takeIf { it.isFinite() }
+}
 
 @Composable
 internal fun ReplayCurves(data: ReplayData, index: Int, seek: (Int) -> Unit) {
- var channel by remember { mutableStateOf(channels.first()) }
+ var channel by remember { mutableStateOf(replayChannels.first()) }
  var menu by remember { mutableStateOf(false) }
  var zoom by remember { mutableIntStateOf(1) }
  val frames = data.frames
- val values = remember(data,channel) { frames.map { it.samples[channel.source]?.values?.getOrNull(channel.axis)?.times(channel.scale) } }
+ val values = remember(data,channel) { frames.map { replayChannelValue(channel, it) } }
  val first = frames.first().nanos
  val span = ((frames.last().nanos-first)/zoom).coerceAtLeast(1)
  val start = (frames[index].nanos-span/2).coerceIn(first,maxOf(first,frames.last().nanos-span))
@@ -41,7 +82,7 @@ internal fun ReplayCurves(data: ReplayData, index: Int, seek: (Int) -> Unit) {
   Row {
    Box {
     TextButton(onClick={menu=true}) { Text(channel.label) }
-    DropdownMenu(menu,{menu=false}) { channels.forEach { c -> DropdownMenuItem({Text(c.label)}, {channel=c;menu=false}) } }
+    DropdownMenu(menu,{menu=false}) { replayChannels.forEach { c -> DropdownMenuItem({Text(c.label)}, {channel=c;menu=false}) } }
    }
    TextButton(onClick={zoom=if(zoom==8) 1 else zoom*2}) { Text("时间窗 1/$zoom") }
   }

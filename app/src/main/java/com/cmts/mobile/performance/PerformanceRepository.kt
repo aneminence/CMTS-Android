@@ -62,6 +62,17 @@ class PerformanceRepository(private val root: File) {
         try { handle.sampleWriter.flush(); handle.sampleWriter.close() } catch (_: Exception) {}
     }
 
+    /**
+     * Delete an attempt directory that never produced a run (continuous mode housekeeping).
+     * Only directories directly under [attemptsDir] are removed. Returns true if deleted.
+     */
+    fun discardAttempt(handle: AttemptHandle): Boolean {
+        closeSamples(handle)
+        val dir = handle.dir.canonicalFile
+        if (dir.parentFile != attemptsDir().canonicalFile) return false
+        return dir.deleteRecursively()
+    }
+
     fun writeResult(handle: AttemptHandle, result: PerformanceResult): File {
         closeSamples(handle)
         val next = nextResultVersion(handle.dir)

@@ -1,20 +1,70 @@
 package com.cmts.mobile
 
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
-data class ReplayFrame(val nanos: Long, val samples: Map<String, Sample>)
-data class ReplayData(val session: File, val frames: List<ReplayFrame>, val track: List<TrackPoint>)
-object Replay {
+/**
+ * One replay snapshot. [mountZero] is the session's saved install zero (from metadata.json), so
+ * replay views apply the same vehicle-axis transform as the live Dashboard did; disabled when the
+ * session was recorded without zero. Raw samples stay raw.
+ */
+internal data class ReplayFrame(val nanos: Long, val samples: Map<String, Sample>, val mountZero: MountZero = MountZero())
+internal data class ReplayData(val session: File, val frames: List<ReplayFrame>, val track: List<TrackPoint>, val mountZero: MountZero = MountZero())
+
+/** Sources loaded into replay frames (rotation vector is needed for gravity-removed linear accel). */
+internal val REPLAY_SOURCES = setOf(
+ "phone.pressure","phone.satellites","phone.gps","phone.rotation_vector",
+ "vehicle.accel","vehicle.gyro","vehicle.attitude",
+)
+
+/**
+ * Rebuild the install zero CaptureService saved at stop (mountZeroEnabled, finalMountBasis,
+ * mountZeroAccel/Gyro/Attitude, mountZeroAtElapsedNanos). Missing or disabled → disabled zero
+ * (raw axes); never invents a zero.
+ */
+internal fun mountZeroFromMetadata(meta: JSONObject?): MountZero {
+ if (meta == null || !meta.optBoolean("mountZeroEnabled", false)) return MountZero()
+ fun doubles(key: String): List<Double>? {
+  val arr = meta.optJSONArray(key) ?: return null
+  val out = List(arr.length()) { i -> arr.optDouble(i) }
+  return out.takeIf { it.all(Double::isFinite) }
+ }
+ fun v3(arr: JSONArray?): V3? {
+  if (arr == null || arr.length() < 3) return null
+  val v = V3(arr.optDouble(0), arr.optDouble(1), arr.optDouble(2))
+  return v.takeIf { it.x.isFinite() && it.y.isFinite() && it.z.isFinite() }
+ }
+ val gyro = doubles("mountZeroGyro") ?: return MountZero()
+ val attitude = doubles("mountZeroAttitude") ?: return MountZero()
+ if (gyro.size < 3 || attitude.size < 3) return MountZero()
+ val basis = meta.optJSONArray("finalMountBasis")?.let { b ->
+  val f = v3(b.optJSONArray(0)); val l = v3(b.optJSONArray(1)); val u = v3(b.optJSONArray(2))
+  if (f != null && l != null && u != null) MountBasis(f, l, u) else null
+ }
+ return MountZero(
+  basis = basis,
+  enabled = true,
+  accel = doubles("mountZeroAccel") ?: emptyList(),
+  gyro = gyro,
+  attitude = attitude,
+  zeroedAtElapsedNanos = if (meta.has("mountZeroAtElapsedNanos") && !meta.isNull("mountZeroAtElapsedNanos")) meta.optLong("mountZeroAtElapsedNanos") else null,
+ )
+}
+
+internal object Replay {
  private var cacheKey: String? = null
  private var cacheData: ReplayData? = null
  @Synchronized
  fun read(session: File, progress: (Int) -> Unit = {}): ReplayData {
   require(File(session,"closed.marker").exists()) { "请先停止并保存记录" }
   val csv = File(session,"samples.csv")
-  val key = "${session.absolutePath}:${csv.length()}:${csv.lastModified()}"
+  val metaFile = File(session,"metadata.json")
+  val key = "${session.absolutePath}:${csv.length()}:${csv.lastModified()}:${metaFile.lastModified()}"
   if(cacheKey == key) cacheData?.let { progress(100); return it }
   val fileSize = csv.length().coerceAtLeast(1)
-  val sources = setOf("phone.pressure","phone.satellites","phone.gps","vehicle.accel","vehicle.gyro","vehicle.attitude")
+  val sources = REPLAY_SOURCES
+  val mountZero = runCatching { mountZeroFromMetadata(if (metaFile.isFile) JSONObject(metaFile.readText()) else null) }.getOrDefault(MountZero())
   var readChars = 0L
   var lastPercent = -1
   val rawLatest = mutableMapOf<String,String>()
@@ -46,14 +96,14 @@ object Replay {
    if(last < 0 || t-last >= 100_000_000L) {
     require(frames.size < 72000) { "记录过长，当前回放最多约两小时，请分段" }
     rawLatest.forEach { (source, raw) -> latest[source] = parse(raw) }
-    frames.add(ReplayFrame(t,latest.toMap())); last=t
+    frames.add(ReplayFrame(t,latest.toMap(),mountZero)); last=t
    }
   } }
   require(frames.isNotEmpty()) { "记录中没有可回放数据" }
   rawLatest.forEach { (source, raw) -> latest[source] = parse(raw) }
-  if(lastTime > frames.last().nanos) frames.add(ReplayFrame(lastTime,latest.toMap()))
+  if(lastTime > frames.last().nanos) frames.add(ReplayFrame(lastTime,latest.toMap(),mountZero))
   progress(100)
-  return ReplayData(session,frames,track.sortedBy { it.nanos }).also { cacheKey=key; cacheData=it }
+  return ReplayData(session,frames,track.sortedBy { it.nanos },mountZero).also { cacheKey=key; cacheData=it }
  }
 }
 

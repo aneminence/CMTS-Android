@@ -31,8 +31,23 @@ internal fun dashboardValue(value: Double?, scale: Double = 1.0, digits: Int = 1
 internal fun isFresh(sample: Sample?, now: Long, live: Boolean): Boolean =
     live && sample != null && now >= sample.nanos && now - sample.nanos <= 3_000_000_000L
 
+/**
+ * Vehicle accel / gyro / attitude exactly as the Dashboard shows them: gravity-removed linear accel
+ * (rotation vector, attitude fallback), and — when [zero] is enabled — the install-zero transform.
+ * Shared by live Dashboard, replay Dashboard/attitude panes and ReplayCurves.
+ */
+internal fun displayVehicleAxes(zero: MountZero, samples: Map<String, Sample>): MountZeroAxes {
+ val accel = samples["vehicle.accel"]?.values
+ val gyro = samples["vehicle.gyro"]?.values
+ val attitude = samples["vehicle.attitude"]?.values
+ val rotation = samples["phone.rotation_vector"]?.values
+ val linear = vehicleLinearAccel(accel, rotation, attitude)
+ val zeroed = if (zero.enabled) applyEnabledMountZero(zero, accel, gyro, attitude, rotation) else null
+ return MountZeroAxes(accel = zeroed?.accel ?: linear, gyro = zeroed?.gyro ?: gyro, attitude = zeroed?.attitude ?: attitude)
+}
+
 @Composable
-fun Dashboard(replay: ReplayFrame? = null, landscape: Boolean = false) {
+internal fun Dashboard(replay: ReplayFrame? = null, landscape: Boolean = false) {
  if (landscape) DashboardLandscape(replay) else DashboardPortrait(replay)
 }
 
@@ -229,12 +244,12 @@ private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
  val gyroRaw = samples["vehicle.gyro"]
  val attitudeRaw = samples["vehicle.attitude"]
  val rotationRaw = samples["phone.rotation_vector"]
- val zero = if (replay == null) Live.mountZero else MountZero()
- val linear = vehicleLinearAccel(accelRaw?.values, rotationRaw?.values, attitudeRaw?.values)
- val zeroed = if (zero.enabled) applyEnabledMountZero(zero, accelRaw?.values, gyroRaw?.values, attitudeRaw?.values, rotationRaw?.values) else null
- val accelValues = zeroed?.accel ?: linear
- val gyroValues = zeroed?.gyro ?: gyroRaw?.values
- val attitudeValues = zeroed?.attitude ?: attitudeRaw?.values
+ // Replay uses the session's saved install zero (metadata.json) so axes match what was shown live.
+ val zero = replay?.mountZero ?: Live.mountZero
+ val axes = displayVehicleAxes(zero, samples)
+ val accelValues = axes.accel
+ val gyroValues = axes.gyro
+ val attitudeValues = axes.attitude
  val accelFresh = isFresh(accelRaw, now, running) && (
   isFresh(rotationRaw, now, running) || isFresh(attitudeRaw, now, running)
  )
