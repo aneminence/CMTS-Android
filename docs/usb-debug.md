@@ -15,3 +15,14 @@ USB Host API 枚举所有设备，驱动 enumDevice 再判定可连接范围，�
 实机 SM-S9180 旧版本复现：锁屏后 CaptureService 仍为 isForeground=true，CMTS:capture 唤醒锁为 DISABLED，CSV 停止增长；亮屏恢复。系统 low_power=1；单独加入电池优化白名单未解决。用户明确授权关闭省电模式后，锁屏唤醒锁恢复 ACQ，CSV 持续增长。保留 CMTS 电池优化豁免。
 本次改进：录制初始化前获取唤醒锁；优先使用唤醒型传感器（无则回退）；主页面提供省电模式警告及系统设置入口。没有绕过系统强制停止，也不承诺省电模式下连续记录。USB 页面仍为 Activity 生命周期，USB 后台服务尚待实现。
 构建、现有单元测试、Lint 通过：evidence/lockscreen-build.log；已 adb install -r 更新手机，无清除数据。
+
+## 2026-11-11 CH344Q 0 字节排查
+
+现象：CHIP_CH344Q（VID 1A86 / PID 55D5，8 个接口 0–7 交替为 CDC 控制/数据）已连接 115200 8N1、串口索引 0，UI 显示正在保存 usb-*.bin，但已接收 0 字节。Note20 上已复现空文件 iles/usb/usb-1794366105790.bin。
+
+驱动结论：WCHUARTManager 把串口索引 n 映射到接口对 (2n, 2n+1)，即 UART0–UART3；索引 0 不是控制接口本身，打开/claim/读线程在 openDevice 后对全部口都会启动。enableSerial 对 CH344Q 为 no-op（官方说明仅 CH9114 需要）。
+eadData 从内部缓冲区轮询，本身可用。
+
+更可能的产品原因：紫板 UM982 接在 UART0 以外的口，页面默认只配置并读取索引 0。无天线时模块仍可能输出状态或空 NMEA，但接错口会是 0 字节。
+
+本次改动：连接时对全部串口设置波特率并同时计数；文件按 usb-时间戳-uartN.bin 分口保存；UI 标明接口角色、显示各口字节数，并可在「全部监听」下自动把预览切到第一个有数据的口。可选拉低 DTR，默认关闭。
