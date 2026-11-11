@@ -154,46 +154,112 @@ sealed class NmeaUpdate {
     data object Ignored : NmeaUpdate()
 }
 
-/** Combines GGA / RMC / HPR / GSV. A void or empty sentence never reuses an older fix. */
-class NmeaFixAssembler {
-    private var lastGga: NmeaParser.Gga? = null
-    private var lastRmc: NmeaParser.Rmc? = null
+/** Combines GGA / RMC / HPR / GSV into at most one fix per NMEA epoch. A void or empty sentence never reuses an older fix. */
+class NmeaFixAssembler(private val elapsedNanos: () -> Long = { System.nanoTime() }) {
+    companion object {
+        const val MERGE_WINDOW_NANOS = 25_000_000L
+    }
+
+    private class Epoch(
+        val key: String,
+        val firstNanos: Long,
+        var gga: NmeaParser.Gga? = null,
+        var rmc: NmeaParser.Rmc? = null,
+        var hpr: NmeaParser.Hpr? = null,
+        var ggaVoid: Boolean = false,
+        var emitted: Boolean = false,
+    )
+
+    private var epoch: Epoch? = null
     private var lastHpr: NmeaParser.Hpr? = null
     private val visibleByTalker = mutableMapOf<String, Int>()
 
-    fun onLine(line: String): NmeaUpdate {
-        val parsed = NmeaParser.split(line) ?: return NmeaUpdate.Ignored
+    fun onLine(line: String): List<NmeaUpdate> {
+        val parsed = NmeaParser.split(line) ?: return emptyList()
+        val now = elapsedNanos()
         return when (parsed.type) {
             "GGA" -> {
-                val gga = NmeaParser.parseGga(parsed.fields) ?: return NmeaUpdate.Ignored
-                lastGga = gga
+                val gga = NmeaParser.parseGga(parsed.fields) ?: return emptyList()
+                val out = mutableListOf<NmeaUpdate>()
+                val current = enterEpoch(epochKey(gga.utcHms, now), now, out)
+                current.gga = gga
                 if (!gga.hasPosition) {
-                    NmeaUpdate.NoFix(if (gga.quality <= 0) "GGA 未锁定" else "GGA 坐标为空")
+                    current.ggaVoid = true
+                    out += NmeaUpdate.NoFix(if (gga.quality <= 0) "GGA 未锁定" else "GGA 坐标为空")
                 } else {
-                    emitFix()
+                    emitIfComplete(current)?.let { out += it }
                 }
+                out
             }
             "RMC" -> {
-                val rmc = NmeaParser.parseRmc(parsed.fields) ?: return NmeaUpdate.Ignored
-                lastRmc = rmc
+                val rmc = NmeaParser.parseRmc(parsed.fields) ?: return emptyList()
+                val out = mutableListOf<NmeaUpdate>()
+                val current = enterEpoch(epochKey(rmc.utcHms, now), now, out)
+                current.rmc = rmc
                 if (!rmc.hasPosition) {
-                    NmeaUpdate.NoFix(if (!rmc.statusActive) "RMC 状态无效" else "RMC 坐标为空")
-                } else if (lastGga?.hasPosition == false) {
-                    NmeaUpdate.NoFix(if (lastGga?.quality ?: 0 <= 0) "GGA 未锁定" else "GGA 坐标为空")
+                    out += NmeaUpdate.NoFix(if (!rmc.statusActive) "RMC 状态无效" else "RMC 坐标为空")
+                } else if (current.ggaVoid) {
+                    out += NmeaUpdate.NoFix(
+                        if (current.gga?.quality ?: 0 <= 0) "GGA 未锁定" else "GGA 坐标为空",
+                    )
                 } else {
-                    emitFix()
+                    emitIfComplete(current)?.let { out += it }
                 }
+                out
             }
             "HPR" -> {
-                lastHpr = NmeaParser.parseHpr(parsed.fields) ?: return NmeaUpdate.Ignored
-                NmeaUpdate.Ignored
+                val hpr = NmeaParser.parseHpr(parsed.fields) ?: return emptyList()
+                lastHpr = hpr
+                val timeField = parsed.fields.firstOrNull().orEmpty()
+                val timed = timeField.matches(Regex("""\d{6}(\.\d+)?"""))
+                val current = epoch
+                if (current != null && (!timed || current.key == "utc:$timeField")) {
+                    current.hpr = hpr
+                }
+                emptyList()
             }
             "GSV" -> {
                 NmeaParser.parseGsvVisible(parsed.fields)?.let { visibleByTalker[parsed.talker] = it }
-                NmeaUpdate.Ignored
+                emptyList()
             }
-            else -> NmeaUpdate.Ignored
+            else -> emptyList()
         }
+    }
+
+    /** Emits a pending GGA-only or RMC-only epoch. Safe to call at stream end. */
+    fun flush(): List<NmeaUpdate> {
+        val current = epoch ?: return emptyList()
+        if (current.emitted) return emptyList()
+        val fix = buildFix(current) ?: return emptyList()
+        current.emitted = true
+        return listOf(NmeaUpdate.Fix(fix))
+    }
+
+    private fun epochKey(utcHms: String, now: Long): String {
+        if (utcHms.isNotBlank()) return "utc:$utcHms"
+        val current = epoch
+        if (current != null && now - current.firstNanos <= MERGE_WINDOW_NANOS) return current.key
+        return "t:$now"
+    }
+
+    private fun enterEpoch(key: String, now: Long, out: MutableList<NmeaUpdate>): Epoch {
+        val current = epoch
+        if (current != null && current.key == key) return current
+        if (current != null && !current.emitted) {
+            buildFix(current)?.let {
+                current.emitted = true
+                out += NmeaUpdate.Fix(it)
+            }
+        }
+        return Epoch(key, now).also { epoch = it }
+    }
+
+    private fun emitIfComplete(epoch: Epoch): NmeaUpdate? {
+        if (epoch.emitted) return null
+        if (epoch.gga == null || epoch.rmc == null) return null
+        val fix = buildFix(epoch) ?: return null
+        epoch.emitted = true
+        return NmeaUpdate.Fix(fix)
     }
 
     private fun visibleCount(): Int? {
@@ -202,9 +268,10 @@ class NmeaFixAssembler {
         return visibleByTalker.values.sum()
     }
 
-    private fun emitFix(): NmeaUpdate {
-        val gga = lastGga
-        val rmc = lastRmc
+    private fun buildFix(epoch: Epoch): NmeaFix? {
+        if (epoch.ggaVoid) return null
+        val gga = epoch.gga
+        val rmc = epoch.rmc
         val lat = when {
             gga?.hasPosition == true -> gga.latitude
             rmc?.hasPosition == true -> rmc.latitude
@@ -215,24 +282,22 @@ class NmeaFixAssembler {
             rmc?.hasPosition == true -> rmc.longitude
             else -> null
         }
-        if (lat == null || lon == null) return NmeaUpdate.Ignored
-        val heading = lastHpr?.headingDeg ?: rmc?.headingDeg
+        if (lat == null || lon == null) return null
+        val heading = epoch.hpr?.headingDeg ?: lastHpr?.headingDeg ?: rmc?.headingDeg
         val quality = buildString {
             append("um982_nmea")
             if (gga != null) append("_gga_q").append(gga.quality)
         }
-        return NmeaUpdate.Fix(
-            NmeaFix(
-                latitude = lat,
-                longitude = lon,
-                altitudeM = gga?.altitudeM,
-                speedMps = rmc?.speedMps,
-                headingDeg = heading,
-                utcMillis = rmc?.utcMillis,
-                satsUsed = gga?.satsUsed,
-                satsVisible = visibleCount(),
-                quality = quality,
-            )
+        return NmeaFix(
+            latitude = lat,
+            longitude = lon,
+            altitudeM = gga?.altitudeM,
+            speedMps = rmc?.speedMps,
+            headingDeg = heading,
+            utcMillis = rmc?.utcMillis,
+            satsUsed = gga?.satsUsed,
+            satsVisible = visibleCount(),
+            quality = quality,
         )
     }
 }

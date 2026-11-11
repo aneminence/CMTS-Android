@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.*
@@ -369,10 +370,16 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
    if (raw != "—") lastGood[key] = raw
    return lastGood[key] ?: raw
   }
-  PeekGauge("速度", display("spd", gps,3,3.6), "km/h", Modifier.fillMaxWidth().weight(1f))
-  PeekGauge("高度", display("alt", gps,2), "m", Modifier.fillMaxWidth().weight(1f))
-  PeekGauge("大气压力", display("prs", samples["phone.pressure"],0), "mbar", Modifier.fillMaxWidth().weight(1f))
-  PeekGauge("卫星 可见 / 定位", "${display("sv", sat,0,digits=0)} / ${display("su", sat,1,digits=0)}", "颗", Modifier.fillMaxWidth().weight(1f))
+  Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+   Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    PeekGauge("速度", display("spd", gps,3,3.6), "km/h", Modifier.weight(1f).fillMaxHeight())
+    PeekGauge("高度", display("alt", gps,2), "m", Modifier.weight(1f).fillMaxHeight())
+   }
+   Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    PeekGauge("大气压力", display("prs", samples["phone.pressure"],0), "mbar", Modifier.weight(1f).fillMaxHeight())
+    PeekGauge("卫星 可见 / 定位", "${display("sv", sat,0,digits=0)} / ${display("su", sat,1,digits=0)}", "颗", Modifier.weight(1f).fillMaxHeight())
+   }
+  }
   Text(pullHint, color = Color(0xFFD4AF37), style = MaterialTheme.typography.labelSmall, maxLines = 1)
   Text(if(frame != null) "历史回放" else Live.status, style = MaterialTheme.typography.labelSmall, maxLines = 1)
  }
@@ -382,13 +389,13 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
 @Composable
 private fun PeekGauge(title: String, value: String, unit: String, modifier: Modifier) {
  Card(modifier) {
-  Column(Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp)) {
-   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-    Text(title, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-    Text(unit, style = MaterialTheme.typography.labelSmall, color = Color(0xFFD4AF37))
+  Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp)) {
+   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+    Text(title, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+    Text(unit, style = MaterialTheme.typography.labelSmall, color = Color(0xFFD4AF37), maxLines = 1)
    }
-   Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-    Text(value, style = MaterialTheme.typography.titleLarge, maxLines = 1)
+   Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.CenterEnd) {
+    Text(value, style = MaterialTheme.typography.titleLarge, maxLines = 1, textAlign = TextAlign.End, overflow = TextOverflow.Ellipsis)
    }
   }
  }
@@ -478,7 +485,7 @@ private fun MainCaptureScreen(
   Live.running -> "记录中 · ${elapsedLabel(Live.startedNanos, now)}"
   else -> "准备记录"
  }
- val portraitPeekHeight = if (history == null) 300.dp else 288.dp
+ val portraitPeekHeight = if (history == null) 328.dp else 288.dp
  @Composable
  fun PortraitPanelBody(fullscreenAction: () -> Unit, expandLabel: String, onToggleExpand: () -> Unit, sheetExpanded: Boolean) {
   // Always request full screen height so Expanded can cover the map. Peek only shows the

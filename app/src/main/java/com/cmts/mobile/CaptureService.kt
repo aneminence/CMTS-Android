@@ -426,6 +426,12 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
 
     private fun stopUsbGnss() {
         handler.removeCallbacks(nmeaWait)
+        val flushPort = chosenNmeaPort
+        nmeaAssemblers.values.forEach { assembler ->
+            assembler.flush().forEach { update ->
+                if (update is NmeaUpdate.Fix && flushPort != null) onExternalFix(update.fix, flushPort)
+            }
+        }
         UsbSerialHub.removeListener(usbListener)
         UsbSerialHub.release(UsbHubOwner.GNSS)
         usbStarted = false
@@ -445,10 +451,13 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             }
             val usePort = chosenNmeaPort ?: continue
             if (port != usePort) continue
-            when (val update = nmeaAssemblers.getOrPut(port) { NmeaFixAssembler() }.onLine(line)) {
-                is NmeaUpdate.Fix -> onExternalFix(update.fix, port)
-                is NmeaUpdate.NoFix -> main.post { Live.gnssStatus = GnssSourceSettings.noFixStatus() }
-                NmeaUpdate.Ignored -> Unit
+            val assembler = nmeaAssemblers.getOrPut(port) { NmeaFixAssembler() }
+            for (update in assembler.onLine(line)) {
+                when (update) {
+                    is NmeaUpdate.Fix -> onExternalFix(update.fix, port)
+                    is NmeaUpdate.NoFix -> main.post { Live.gnssStatus = GnssSourceSettings.noFixStatus() }
+                    NmeaUpdate.Ignored -> Unit
+                }
             }
         }
     }
