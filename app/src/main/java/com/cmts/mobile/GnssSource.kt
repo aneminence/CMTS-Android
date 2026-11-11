@@ -25,8 +25,12 @@ object GnssSourceSettings {
         Live.gnssSource = source
     }
 
-    fun findCh344q(usb: UsbManager): UsbDevice? =
-        usb.deviceList.values.firstOrNull { it.vendorId == CH344Q_VID && it.productId == CH344Q_PID }
+    fun findUsbGnss(usb: UsbManager): UsbDevice? =
+        usb.deviceList.values
+            .filter { UsbSerialPorts.isGnssBridge(it.vendorId, it.productId) }
+            .sortedWith(compareByDescending<UsbDevice> { it.deviceName == UsbSerialHub.deviceName() }
+                .thenByDescending { it.productId == CH344Q_PID }.thenBy { it.deviceName })
+            .firstOrNull()
 
     fun noFixStatus(): String = "外接模块已连接，尚无定位（可能未接天线或未锁定）"
 

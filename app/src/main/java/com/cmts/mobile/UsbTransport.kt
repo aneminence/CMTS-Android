@@ -7,6 +7,7 @@ import cn.wch.uartlib.WCHUARTManager
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /** Raw byte transport only: deliberately exposes no GNSS command/write API. */
 class UsbTransport(private val app: Application) {
@@ -17,6 +18,12 @@ class UsbTransport(private val app: Application) {
     private val worker = Executors.newSingleThreadExecutor()
     private val running = AtomicBoolean(false)
     private var device: UsbDevice? = null
+    private val pendingParameters = AtomicReference<Pair<Int, Boolean>?>(null)
+
+    fun reconfigure(baud: Int, dtr: Boolean) {
+        require(baud > 0)
+        pendingParameters.set(baud to dtr)
+    }
 
     fun connect(
         d: UsbDevice,
@@ -73,6 +80,14 @@ class UsbTransport(private val app: Application) {
                 try {
                     while (running.get()) {
                         check(manager.isConnected(d)) { "USB 已断开" }
+                        pendingParameters.getAndSet(null)?.let { (speed, dtr) ->
+                            for (port in 0 until serialCount) {
+                                check(manager.setSerialParameter(d, port, speed, 8, 1, 0, false)) { "无法应用波特率 $speed" }
+                                check(manager.setDTR(d, port, dtr)) { "无法应用 DTR" }
+                            }
+                            Log.i(TAG, "parameters applied baud=$speed dtr=$dtr")
+                            status("已应用到当前 USB 会话：$speed · 8N1 · DTR=$dtr；后台定位与调试页共用此参数。")
+                        }
                         var any = false
                         for (port in 0 until serialCount) {
                             val bytes = manager.readData(d, port)

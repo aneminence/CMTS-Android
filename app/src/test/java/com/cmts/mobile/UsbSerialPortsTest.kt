@@ -6,6 +6,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UsbSerialPortsTest {
+    @Test fun directCh340IsRecognizedWithoutAcceptingUnrelatedDevices() {
+        assertTrue(UsbSerialPorts.isGnssBridge(0x1A86, 0x7523))
+        assertTrue(UsbSerialPorts.isGnssBridge(0x1A86, 0x55D5))
+        org.junit.Assert.assertFalse(UsbSerialPorts.isGnssBridge(0x1234, 0x7523))
+        org.junit.Assert.assertFalse(UsbSerialPorts.isGnssBridge(0x1A86, 0x1234))
+        val hint = UsbSerialPorts.deviceHint(1, 0x1A86, 0x7523)
+        assertTrue(hint.contains("CH340"))
+        assertTrue(hint.contains("UART0"))
+        org.junit.Assert.assertFalse(hint.contains("未识别"))
+    }
+
     @Test fun ch344qEightInterfacesMapToFourUarts() {
         assertEquals(4, UsbSerialPorts.likelySerialCount(8))
         assertEquals("控制 CDC · UART0", UsbSerialPorts.interfaceRole(0, 8))

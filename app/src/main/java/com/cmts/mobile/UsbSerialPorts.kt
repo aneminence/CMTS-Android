@@ -11,6 +11,9 @@ package com.cmts.mobile
 object UsbSerialPorts {
     const val GOLD = 0xFFD4AF37.toInt()
 
+    fun isGnssBridge(vendorId: Int, productId: Int): Boolean =
+        vendorId == 0x1A86 && productId in setOf(0x55D5, 0x7523)
+
     fun likelySerialCount(interfaceCount: Int): Int? =
         if (interfaceCount >= 2 && interfaceCount % 2 == 0) interfaceCount / 2 else null
 
@@ -25,6 +28,9 @@ object UsbSerialPorts {
     fun deviceHint(interfaceCount: Int, vendorId: Int, productId: Int): String {
         val count = likelySerialCount(interfaceCount)
         val ids = "VID %04X / PID %04X".format(vendorId, productId)
+        if (vendorId == 0x1A86 && productId == 0x7523) {
+            return "$ids。CH340 USB 转串口，1 路串口：选择 UART0 或全部监听，可直连 UM982 板载 USB。"
+        }
         return if (count != null) {
             val last = count - 1
             "$ids。$interfaceCount 个接口配对为 $count 路串口（UART0–UART$last）。" +

@@ -28,6 +28,19 @@ object UsbSerialHub {
     @Volatile private var opened = false
     private val startGeneration = AtomicInteger(0)
 
+    @Volatile var currentBaud: Int = 115200
+        private set
+    @Volatile var currentDtr: Boolean = false
+        private set
+
+    fun reconfigure(baud: Int, dtr: Boolean): Boolean = synchronized(lock) {
+        if (!opened) return false
+        transport?.reconfigure(baud, dtr) ?: return false
+        currentBaud = baud
+        currentDtr = dtr
+        true
+    }
+
     fun isOpen(): Boolean = opened
 
     fun deviceName(): String? = openDeviceName
@@ -61,6 +74,8 @@ object UsbSerialHub {
             if (opened) return true
             application = app
             val session = transport ?: UsbTransport(app).also { transport = it }
+            currentBaud = baud
+            currentDtr = assertDtr
             opened = true
             openDeviceName = device.deviceName
             val gen = startGeneration.incrementAndGet()

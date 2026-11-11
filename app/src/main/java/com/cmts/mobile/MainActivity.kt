@@ -107,11 +107,14 @@ class MainActivity : ComponentActivity() {
  private var filesVisible by mutableStateOf(false)
  private var pendingPerfCapture by mutableStateOf(false)
  private var pendingExternalGnss = false
- private val usbPermissionAction get() = "$packageName.USB_PERMISSION"
+ private val usbPermissionAction get() = "$packageName.USB_GNSS_PERMISSION"
  private val usbPermissionReceiver = object : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
    if (intent.action != usbPermissionAction) return
-   val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+   if (GnssSourceSettings.load(this@MainActivity) != GnssSource.EXTERNAL) return
+   val usb = getSystemService(UsbManager::class.java)
+   val device = usb.deviceList[intent.getStringExtra("requestedDeviceName")]
+   val granted = device != null && usb.hasPermission(device)
    if (granted) startExternalGnss()
    else Live.gnssStatus = "USB 授权被拒绝，未改用外接定位"
   }
@@ -248,9 +251,9 @@ class MainActivity : ComponentActivity() {
    return
   }
   val usb = getSystemService(UsbManager::class.java)
-  val device = GnssSourceSettings.findCh344q(usb)
+  val device = GnssSourceSettings.findUsbGnss(usb)
   if (device == null) {
-   Live.gnssStatus = "未检测到紫板 CH344Q，请检查 OTG 连接"
+   Live.gnssStatus = "未检测到 CH340 / CH344Q，请检查 UM982 的 USB 连接"
    startForegroundService(CaptureService.acquireIntent(this, CaptureService.CLIENT_USB_GNSS))
    return
   }
@@ -262,7 +265,8 @@ class MainActivity : ComponentActivity() {
      PendingIntent.getBroadcast(
       this,
       device.deviceId,
-      Intent(usbPermissionAction).setPackage(packageName),
+      Intent(usbPermissionAction).setPackage(packageName)
+       .putExtra("requestedDeviceName", device.deviceName),
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
      ),
     )
@@ -496,7 +500,7 @@ private fun MainCaptureScreen(
   Live.running -> "记录中 · ${elapsedLabel(Live.startedNanos, now)}"
   else -> "准备记录"
  }
- val portraitPeekHeight = if (history == null) 328.dp else 288.dp
+ val portraitPeekHeight = if (history == null) 248.dp else 288.dp
  @Composable
  fun PortraitPanelBody(fullscreenAction: () -> Unit, expandLabel: String, onToggleExpand: () -> Unit, sheetExpanded: Boolean) {
   // Always request full screen height so Expanded can cover the map. Peek only shows the

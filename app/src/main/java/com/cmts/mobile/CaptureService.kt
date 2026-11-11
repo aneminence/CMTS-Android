@@ -393,9 +393,9 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     private fun startUsbGnss() {
         if (usbStarted) return
         val usb = getSystemService(UsbManager::class.java)
-        val device = GnssSourceSettings.findCh344q(usb)
+        val device = GnssSourceSettings.findUsbGnss(usb)
         if (device == null) {
-            main.post { Live.gnssStatus = "未检测到紫板 CH344Q，请检查 OTG 连接" }
+            main.post { Live.gnssStatus = "未检测到 CH340 / CH344Q，请检查 UM982 的 USB 连接" }
             return
         }
         if (!usb.hasPermission(device)) {

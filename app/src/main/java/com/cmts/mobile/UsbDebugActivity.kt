@@ -44,6 +44,7 @@ import java.io.File
 
 class UsbDebugActivity : ComponentActivity() {
     private lateinit var usb: UsbManager
+    private var grantedDevices by mutableStateOf<Set<String>>(emptySet())
     private var devices by mutableStateOf<List<UsbDevice>>(emptyList())
     private var status by mutableStateOf("请选择设备申请权限，然后连接。只接收数据，不发送 GNSS 指令。")
     private var preview by mutableStateOf(byteArrayOf())
@@ -88,10 +89,12 @@ class UsbDebugActivity : ComponentActivity() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == permissionAction) {
-                status = if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                val name = intent.getStringExtra("requestedDeviceName")
+                val device = usb.deviceList[name]
+                status = if (device != null && usb.hasPermission(device)) {
                     "已授权，请点击连接"
                 } else {
-                    "USB 授权被拒绝，可重新申请"
+                    "未获得 USB 权限，请允许系统弹窗；若未弹出，请拔插设备后重试"
                 }
             }
             if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
@@ -105,10 +108,18 @@ class UsbDebugActivity : ComponentActivity() {
             refresh()
         }
     }
-    private val permissionAction get() = "$packageName.USB_PERMISSION"
+    private val permissionAction get() = "$packageName.USB_DEBUG_PERMISSION"
     private var connectedName: String? = null
     private var capturePrefix: String? = null
-    private fun refresh() { devices = usb.deviceList.values.sortedBy { it.deviceName } }
+    private fun refresh() {
+        devices = usb.deviceList.values.sortedBy { it.deviceName }
+        grantedDevices = devices.filter { usb.hasPermission(it) }.map { it.deviceName }.toSet()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refresh()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -118,6 +129,10 @@ class UsbDebugActivity : ComponentActivity() {
         baud = prefs.getString("baud", "115200") ?: "115200"
         port = prefs.getString("port", "all") ?: "all"
         assertDtr = prefs.getBoolean("dtr", false)
+        if (UsbSerialHub.isOpen()) {
+            baud = UsbSerialHub.currentBaud.toString()
+            assertDtr = UsbSerialHub.currentDtr
+        }
         val filter = IntentFilter(permissionAction).apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
@@ -142,16 +157,16 @@ class UsbDebugActivity : ComponentActivity() {
                         Text(status)
                         OutlinedTextField(
                             baud,
-                            { if (!active) baud = it },
+                            { baud = it },
                             label = { Text("波特率（默认值自动记忆）") },
-                            enabled = !active,
+                            enabled = true,
                         )
                         Row {
                             listOf(115200, 230400, 460800, 921600).forEach { value ->
-                                TextButton(onClick = { baud = value.toString() }, enabled = !active) { Text("$value") }
+                                TextButton(onClick = { baud = value.toString() }) { Text("$value") }
                             }
                         }
-                        Text("串口（CH344Q 为 UART0–UART3；可先选全部监听，看哪一路有数据）")
+                        Text("串口（CH340 直连选 UART0 或全部监听；CH344Q 为 UART0–UART3）")
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(
                                 onClick = { if (!active) port = "all" },
@@ -179,9 +194,17 @@ class UsbDebugActivity : ComponentActivity() {
                             }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = assertDtr, onCheckedChange = { if (!active) assertDtr = it }, enabled = !active)
+                            Checkbox(checked = assertDtr, onCheckedChange = { assertDtr = it })
                             Text("拉低 DTR（部分转接板需要，默认关闭）")
                         }
+                        if (active) Button(onClick = {
+                            val speed = baud.toIntOrNull()
+                            if (speed == null || speed <= 0) status = "请输入有效波特率"
+                            else if (UsbSerialHub.reconfigure(speed, assertDtr)) {
+                                status = "正在应用参数到当前 USB 会话…"
+                                getPreferences(MODE_PRIVATE).edit().putString("baud", baud).putBoolean("dtr", assertDtr).apply()
+                            } else status = "USB 会话已结束，请重新连接"
+                        }) { Text("应用参数（同时更新后台定位）") }
                         TextButton(onClick = { refresh() }) { Text("刷新设备 (${devices.size})") }
                         if (devices.isEmpty()) Text("未检测到 USB 设备，请检查 OTG 转接头、供电和数据线。")
                         devices.forEach { d -> DeviceBlock(d, gold) }
@@ -236,12 +259,19 @@ class UsbDebugActivity : ComponentActivity() {
                 enabled = !active,
                 onClick = {
                     try {
+                        refresh()
+                        if (usb.hasPermission(d)) {
+                            status = "已授权，请点击连接"
+                            return@TextButton
+                        }
+                        status = "正在申请 USB 权限，请查看系统授权弹窗…"
                         usb.requestPermission(
                             d,
                             PendingIntent.getBroadcast(
                                 this@UsbDebugActivity,
                                 d.deviceId,
-                                Intent(permissionAction).setPackage(packageName),
+                                Intent(permissionAction).setPackage(packageName)
+                                    .putExtra("requestedDeviceName", d.deviceName),
                                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                             ),
                         )
@@ -249,9 +279,9 @@ class UsbDebugActivity : ComponentActivity() {
                         status = "权限申请失败：${e.message}"
                     }
                 },
-            ) { Text(if (usb.hasPermission(d)) "已授权" else "申请授权") }
+            ) { Text(if (d.deviceName in grantedDevices) "已授权" else "申请授权") }
             Button(
-                enabled = !active && usb.hasPermission(d),
+                enabled = !active && d.deviceName in grantedDevices,
                 onClick = { startCapture(d) },
             ) { Text("连接") }
         }
@@ -299,7 +329,11 @@ class UsbDebugActivity : ComponentActivity() {
             status = "无法打开设备：USB 会话可能被占用"
             return
         }
-        if (already) status = "已加入现有 USB 会话，本页仅预览；原始文件由先打开的会话决定。"
+        if (already) {
+            baud = UsbSerialHub.currentBaud.toString()
+            assertDtr = UsbSerialHub.currentDtr
+            status = "已加入现有 USB 会话：$baud · 8N1 · DTR=$assertDtr。改参数后点击「应用参数」。"
+        }
     }
 
     private val debugListener = object : UsbByteListener {
