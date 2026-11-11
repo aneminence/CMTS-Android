@@ -21,7 +21,11 @@ class PhoneGnssSpeedSourcePlaceholder : SpeedSource {
     override fun stop() = Unit
 }
 
-/** Future UM982 serial adapter — clock mapping required before sharing domains. */
+/**
+ * UM982 NMEA adapter is wired through CaptureService (external GNSS source).
+ * Sample time is phone receive elapsedRealtime; UTC comes from RMC when present.
+ * Invalid/void NMEA must not be turned into speed samples.
+ */
 interface Um982SpeedSource : SpeedSource
 
 /** Future CMTS host adapter — channelKind must say gnss vs wheel etc. */

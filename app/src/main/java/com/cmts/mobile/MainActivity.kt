@@ -13,11 +13,16 @@ import kotlin.math.roundToInt
 import androidx.compose.ui.draw.clipToBounds
 
 import android.Manifest
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.usb.UsbManager
+import android.os.Build
 import android.widget.Toast
 import android.content.res.Configuration
 import android.os.Bundle
@@ -90,6 +95,7 @@ class MainActivity : ComponentActivity() {
    prefs.edit().putBoolean("requested", true).apply()
    previewPermissions.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
   }
+  if (GnssSourceSettings.load(this) == GnssSource.EXTERNAL) startExternalGnss()
  }
  override fun onStop() {
   if (previewBound) unbindService(previewConnection)
@@ -99,6 +105,16 @@ class MainActivity : ComponentActivity() {
  }
  private var filesVisible by mutableStateOf(false)
  private var pendingPerfCapture by mutableStateOf(false)
+ private var pendingExternalGnss = false
+ private val usbPermissionAction get() = "$packageName.USB_PERMISSION"
+ private val usbPermissionReceiver = object : BroadcastReceiver() {
+  override fun onReceive(context: Context, intent: Intent) {
+   if (intent.action != usbPermissionAction) return
+   val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+   if (granted) startExternalGnss()
+   else Live.gnssStatus = "USB 授权被拒绝，未改用外接定位"
+  }
+ }
  private var fileStatus by mutableStateOf("")
  private var busy by mutableStateOf(false)
  private var imported by mutableStateOf<VboData?>(null)
@@ -158,7 +174,19 @@ class MainActivity : ComponentActivity() {
   }
  }
  private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-  if(result[Manifest.permission.ACCESS_FINE_LOCATION] == true) { if (pendingPerfCapture) { pendingPerfCapture = false; beginPerformanceCapture() } else beginRecording() } else { pendingPerfCapture = false; Live.status = "需要精确定位授权；未开始采集" }
+  if(result[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+   if (pendingExternalGnss) { pendingExternalGnss = false; startExternalGnss() }
+   else if (pendingPerfCapture) { pendingPerfCapture = false; beginPerformanceCapture() }
+   else beginRecording()
+  } else {
+   pendingPerfCapture = false
+   if (pendingExternalGnss) {
+    pendingExternalGnss = false
+    Live.gnssStatus = "需要定位权限才能在后台使用外接定位"
+   } else {
+    Live.status = "需要精确定位授权；未开始采集"
+   }
+  }
  }
  private fun beginRecording() {
   RecordingCommands.start(this)
@@ -191,9 +219,62 @@ class MainActivity : ComponentActivity() {
   }
  }
 
+ override fun onDestroy() {
+  runCatching { unregisterReceiver(usbPermissionReceiver) }
+  super.onDestroy()
+ }
+
+ private fun selectGnssSource(source: GnssSource) {
+  GnssSourceSettings.save(this, source)
+  if (source == GnssSource.PHONE) {
+   startService(CaptureService.releaseIntent(this, CaptureService.CLIENT_USB_GNSS))
+   Live.gnssStatus = ""
+  } else {
+   startExternalGnss()
+  }
+ }
+
+ private fun startExternalGnss() {
+  if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+   pendingExternalGnss = true
+   Live.gnssStatus = "外接定位后台运行需要定位权限"
+   permissions.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+   return
+  }
+  val usb = getSystemService(UsbManager::class.java)
+  val device = GnssSourceSettings.findCh344q(usb)
+  if (device == null) {
+   Live.gnssStatus = "未检测到紫板 CH344Q，请检查 OTG 连接"
+   startForegroundService(CaptureService.acquireIntent(this, CaptureService.CLIENT_USB_GNSS))
+   return
+  }
+  if (!usb.hasPermission(device)) {
+   Live.gnssStatus = "正在申请 USB 权限…"
+   try {
+    usb.requestPermission(
+     device,
+     PendingIntent.getBroadcast(
+      this,
+      device.deviceId,
+      Intent(usbPermissionAction).setPackage(packageName),
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+     ),
+    )
+   } catch (e: Exception) {
+    Live.gnssStatus = "USB 权限申请失败：${e.message}"
+   }
+   return
+  }
+  startForegroundService(CaptureService.acquireIntent(this, CaptureService.CLIENT_USB_GNSS))
+ }
+
  @OptIn(ExperimentalMaterial3Api::class)
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState); enableEdgeToEdge()
+  Live.gnssSource = GnssSourceSettings.load(this)
+  val filter = IntentFilter(usbPermissionAction)
+  if (Build.VERSION.SDK_INT >= 33) registerReceiver(usbPermissionReceiver, filter, RECEIVER_NOT_EXPORTED)
+  else registerReceiver(usbPermissionReceiver, filter)
   RemoteBridge.start(this)
   setContent {
    MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFD4AF37))) {
@@ -226,6 +307,7 @@ class MainActivity : ComponentActivity() {
        onToggleRecording = { toggleRecording() },
        onOpenFiles = { filesVisible = true },
        onUsbDebug = { startActivity(Intent(this@MainActivity, UsbDebugActivity::class.java)) },
+       onSelectGnssSource = { selectGnssSource(it) },
        filesDir = filesDir,
        onEnsurePerformanceCapture = {
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) beginPerformanceCapture()
@@ -266,13 +348,14 @@ private fun PageDots(pagerState: PagerState, modifier: Modifier = Modifier, vert
 private enum class SidePanelAnchor { Hidden, Peek, Half, Full }
 
 @Composable
-private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: String, frame: ReplayFrame? = null) {
+private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: String, frame: ReplayFrame? = null, onSelectGnssSource: (GnssSource) -> Unit = {}) {
  Column(
   Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp),
   verticalArrangement = Arrangement.spacedBy(4.dp)
  ) {
   Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2)
   Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) { Text(if (Live.running) "停止并保存记录" else "开始记录") }
+  if (frame == null) GnssSourceSwitch(onSelect = onSelectGnssSource)
   var tick by remember { mutableLongStateOf(SystemClock.elapsedRealtimeNanos()) }
   LaunchedEffect(Unit) { while(true) { tick = SystemClock.elapsedRealtimeNanos(); delay(1000) } }
   val samples = frame?.samples ?: Live.samples
@@ -341,6 +424,7 @@ private fun MainCaptureScreen(
  onToggleRecording: () -> Unit,
  onOpenFiles: () -> Unit,
  onUsbDebug: () -> Unit,
+ onSelectGnssSource: (GnssSource) -> Unit,
  filesDir: java.io.File,
  onEnsurePerformanceCapture: () -> Unit,
  onReleasePerformanceCaptureIfIdle: () -> Unit,
@@ -394,7 +478,7 @@ private fun MainCaptureScreen(
   Live.running -> "记录中 · ${elapsedLabel(Live.startedNanos, now)}"
   else -> "准备记录"
  }
- val portraitPeekHeight = if (history == null) 228.dp else 288.dp
+ val portraitPeekHeight = if (history == null) 300.dp else 288.dp
  @Composable
  fun PortraitPanelBody(fullscreenAction: () -> Unit, expandLabel: String, onToggleExpand: () -> Unit, sheetExpanded: Boolean) {
   // Always request full screen height so Expanded can cover the map. Peek only shows the
@@ -447,6 +531,7 @@ private fun MainCaptureScreen(
     ReplaySeekBar(history, replayIndex, { onPlaying(false) }, onReplayIndex)
    }
    if(history == null) Button(onClick = onToggleRecording, modifier = Modifier.fillMaxWidth()) { Text(if(Live.running) "停止并保存记录" else "开始记录") }
+   if(history == null) GnssSourceSwitch(onSelect = onSelectGnssSource)
    SummaryGauges()
    if (includeFullDash) TextButton(onClick = onToggleExpand, modifier = Modifier.fillMaxWidth()) { Text(expandLabel) }
    if (includeFullDash) {
@@ -553,6 +638,7 @@ private fun MainCaptureScreen(
      if (history != null && !inlineReplay) Row { PlaybackActions() }
     }
    }
+   if (history == null) GnssSourceSwitch(onSelect = onSelectGnssSource)
    if (history != null) {
     ReplaySeekBar(history, replayIndex, { onPlaying(false) }, onReplayIndex)
    }
@@ -716,6 +802,7 @@ private fun MainCaptureScreen(
           title = title, frame = frame,
           onStart = onToggleRecording,
           pullHint = if (panelOnEndNow) "上下翻页 · 侧拉展开 ←" else "上下翻页 · 侧拉展开 →",
+          onSelectGnssSource = onSelectGnssSource,
          )
           }
          }

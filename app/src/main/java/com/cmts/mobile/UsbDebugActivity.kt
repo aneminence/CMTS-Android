@@ -44,7 +44,6 @@ import java.io.File
 
 class UsbDebugActivity : ComponentActivity() {
     private lateinit var usb: UsbManager
-    private lateinit var transport: UsbTransport
     private var devices by mutableStateOf<List<UsbDevice>>(emptyList())
     private var status by mutableStateOf("请选择设备申请权限，然后连接。只接收数据，不发送 GNSS 指令。")
     private var preview by mutableStateOf(byteArrayOf())
@@ -98,9 +97,9 @@ class UsbDebugActivity : ComponentActivity() {
             if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
                 @Suppress("DEPRECATION")
                 val d = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                if (d?.deviceName == connectedName) {
-                    transport.stop()
-                    status = "设备已拔出，正在关闭接收"
+                if (d?.deviceName == connectedName || d?.deviceName == UsbSerialHub.deviceName()) {
+                    if (UsbHubOwner.GNSS !in UsbSerialHub.owners()) UsbSerialHub.stopSession()
+                    status = "设备已拔出，正在关闭本页接收"
                 }
             }
             refresh()
@@ -114,7 +113,7 @@ class UsbDebugActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usb = getSystemService(UsbManager::class.java)
-        transport = UsbTransport(application)
+        UsbSerialHub.addListener(debugListener)
         val prefs = getPreferences(MODE_PRIVATE)
         baud = prefs.getString("baud", "115200") ?: "115200"
         port = prefs.getString("port", "all") ?: "all"
@@ -136,7 +135,10 @@ class UsbDebugActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text("USB 设备调试", style = MaterialTheme.typography.headlineSmall)
-                        TextButton(onClick = { finish() }) { Text("返回（停止 USB 接收）") }
+                        TextButton(onClick = { finish() }) { Text("返回") }
+                        if (Live.gnssSource == GnssSource.EXTERNAL) {
+                            Text("定位源已选外接 UM982 时，返回后接收会在后台继续。切源请用主界面「定位源」。")
+                        }
                         Text(status)
                         OutlinedTextField(
                             baud,
@@ -184,7 +186,7 @@ class UsbDebugActivity : ComponentActivity() {
                         if (devices.isEmpty()) Text("未检测到 USB 设备，请检查 OTG 转接头、供电和数据线。")
                         devices.forEach { d -> DeviceBlock(d, gold) }
                         Row {
-                            Button(onClick = { transport.stop() }, enabled = active) { Text("断开") }
+                            Button(onClick = { UsbSerialHub.release(UsbHubOwner.DEBUG); active = false }, enabled = active) { Text("断开") }
                             TextButton(onClick = { hex = !hex }) { Text(if (hex) "切换 ASCII" else "切换 HEX") }
                             TextButton(
                                 onClick = { save.launch(capture!!.name) },
@@ -280,46 +282,62 @@ class UsbDebugActivity : ComponentActivity() {
         }
         active = true
         connectedName = d.deviceName
-        transport.connect(
+        val already = UsbSerialHub.isOpen()
+        val ok = UsbSerialHub.acquire(
+            application,
+            UsbHubOwner.DEBUG,
             d,
-            speed,
-            index,
-            assertDtr,
-            dir,
-            stamp,
-            { srcPort, bytes ->
-                synchronized(lock) {
-                    if (port == "all" && total == 0L && srcPort != previewPort) {
-                        previewPort = srcPort
-                        tail = byteArrayOf()
-                    }
-                    if (srcPort == previewPort) {
-                        total += bytes.size
-                        tail = (tail + bytes).takeLast(4096).toByteArray()
-                    }
-                }
-            },
-            { counts ->
-                synchronized(lock) { totals = counts.copyOf() }
-                if (capture == null) {
-                    UsbSerialPorts.firstPortWithData(counts)?.let { hit ->
-                        capture = File(dir, UsbSerialPorts.captureName("usb-$stamp", hit))
-                    }
-                }
-            },
-            { message ->
-                runOnUiThread {
-                    status = message
-                    if (message.startsWith("接收已结束")) active = false
-                }
-            },
+            baud = speed,
+            assertDtr = assertDtr,
+            saveDir = if (already) null else dir,
+            stamp = stamp,
+            focusPort = index,
         )
+        if (!ok) {
+            active = false
+            connectedName = null
+            status = "无法打开设备：USB 会话可能被占用"
+            return
+        }
+        if (already) status = "已加入现有 USB 会话，本页仅预览；原始文件由先打开的会话决定。"
+    }
+
+    private val debugListener = object : UsbByteListener {
+        override fun onBytes(srcPort: Int, bytes: ByteArray) {
+            synchronized(lock) {
+                if (port == "all" && total == 0L && srcPort != previewPort) {
+                    previewPort = srcPort
+                    tail = byteArrayOf()
+                }
+                if (srcPort == previewPort) {
+                    total += bytes.size
+                    tail = (tail + bytes).takeLast(4096).toByteArray()
+                }
+            }
+        }
+        override fun onCounts(counts: LongArray) {
+            synchronized(lock) { totals = counts.copyOf() }
+            if (capture == null) {
+                val dir = File(filesDir, "usb")
+                UsbSerialPorts.firstPortWithData(counts)?.let { hit ->
+                    val prefix = capturePrefix
+                    if (prefix != null) capture = File(dir, UsbSerialPorts.captureName(prefix, hit))
+                }
+            }
+        }
+        override fun onStatus(message: String) {
+            runOnUiThread {
+                status = message
+                if (message.startsWith("接收已结束")) active = false
+            }
+        }
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(tick)
         unregisterReceiver(receiver)
-        transport.close()
+        UsbSerialHub.removeListener(debugListener)
+        UsbSerialHub.release(UsbHubOwner.DEBUG)
         super.onDestroy()
     }
 }

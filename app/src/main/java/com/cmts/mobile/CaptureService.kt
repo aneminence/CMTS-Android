@@ -1,8 +1,13 @@
 package com.cmts.mobile
 
 import android.app.*
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.*
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
 import android.location.*
 import android.os.*
 import androidx.compose.runtime.*
@@ -40,12 +45,17 @@ object Live {
     internal var mountZero by mutableStateOf(MountZero())
     /** Service process is alive for recording and/or performance. */
     var serviceAlive by mutableStateOf(false)
+    /** Positioning source used for live map / recording / dashboard. Default is phone GNSS. */
+    var gnssSource by mutableStateOf(GnssSource.PHONE)
+    /** Short status for the source switch; empty when using phone GNSS with nothing to say. */
+    var gnssStatus by mutableStateOf("")
 }
 
 /**
  * Foreground capture. Supports concurrent holds:
  * - recording: writes session CSV + metadata
  * - performance: feeds raw GNSS speed into PerformanceController (may run without recording)
+ * - usb GNSS: keeps the CH344Q / UM982 reader alive in the background
  * Last release stops the service.
  */
 class CaptureService : Service(), SensorEventListener, LocationListener {
@@ -103,6 +113,55 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
 
     private var previewVisible = false
     private var gpsUp = false
+    private var usbHold = false
+    private var usbStarted = false
+    private var chosenNmeaPort: Int? = null
+    private val nmeaPorts = mutableSetOf<Int>()
+    private val nmeaBuffers = mutableMapOf<Int, NmeaLineBuffer>()
+    private val nmeaAssemblers = mutableMapOf<Int, NmeaFixAssembler>()
+    private val nmeaWait = Runnable {
+        if (!usbHold || Live.gnssSource != GnssSource.EXTERNAL) return@Runnable
+        if (chosenNmeaPort == null) {
+            main.post { Live.gnssStatus = "已连接紫板，但未发现 NMEA 数据口" }
+        }
+    }
+    private val usbListener = object : UsbByteListener {
+        override fun onBytes(port: Int, data: ByteArray) {
+            handler.post { handleUsbBytes(port, data) }
+        }
+        override fun onCounts(counts: LongArray) = Unit
+        override fun onStatus(message: String) {
+            handler.post { handleUsbStatus(message) }
+        }
+    }
+    private val usbReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            @Suppress("DEPRECATION")
+            val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+            when (intent.action) {
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                    if (device != null && device.deviceName == UsbSerialHub.deviceName()) {
+                        handler.post {
+                            usbStarted = false
+                            main.post {
+                                if (Live.gnssSource == GnssSource.EXTERNAL) {
+                                    Live.gnssStatus = "外接模块已拔出，未改回手机 GNSS。请重新连接或改选「手机 GNSS」。"
+                                }
+                            }
+                        }
+                    }
+                }
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                    if (Live.gnssSource == GnssSource.EXTERNAL && usbHold) {
+                        handler.post {
+                            usbStarted = false
+                            startUsbGnss()
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     inner class PreviewBinder : Binder() {
         fun refresh() { handler.post {
@@ -118,7 +177,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     override fun onUnbind(intent: Intent?): Boolean {
         handler.post {
             previewVisible = false
-            if (!recordHold && !perfHold && !remoteHold) tearDownListeners()
+            if (!recordHold && !perfHold && !remoteHold && !usbHold) tearDownListeners()
         }
         return false
     }
@@ -130,6 +189,11 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         sensors = getSystemService(SENSOR_SERVICE) as SensorManager
         locations = getSystemService(LOCATION_SERVICE) as LocationManager
         Live.serviceAlive = true
+        val filter = IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED).apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(usbReceiver, filter, RECEIVER_NOT_EXPORTED)
+        else registerReceiver(usbReceiver, filter)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -146,8 +210,10 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel("capture", "CMTS 采集", NotificationManager.IMPORTANCE_LOW))
         val title = when {
-            recordHold && (perfHold || remoteHold) -> "CMTS 记录 + 远程/性能"
+            recordHold && (perfHold || remoteHold || usbHold) -> "CMTS 记录 + 远程/性能/外接定位"
             recordHold -> "CMTS 正在记录真实传感器"
+            usbHold && (perfHold || remoteHold) -> "CMTS 外接定位 + 远程/性能"
+            usbHold -> "CMTS 外接 UM982 定位"
             perfHold && remoteHold -> "CMTS 性能 + 远程流"
             perfHold -> "CMTS 性能测试采集"
             remoteHold -> "CMTS 远程实时流"
@@ -177,6 +243,9 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 remoteHold = true
                 RecordingStateMachine.tryTransition(RecordingState.INITIALIZING)
             }
+            CLIENT_USB_GNSS -> {
+                usbHold = true
+            }
             else -> {
                 if (recordHold) return
                 recordHold = true
@@ -187,8 +256,8 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             ensureForeground()
             ensureListeners()
             if (client == CLIENT_RECORD) startRecordingSession()
-            // Remote / preview / perf alone → READY when listeners up and not recording
-            if (!recordHold && (remoteHold || perfHold || previewVisible)) {
+            // Remote / preview / perf / usb GNSS alone → READY when listeners up and not recording
+            if (!recordHold && (remoteHold || perfHold || previewVisible || usbHold)) {
                 RecordingStateMachine.tryTransition(RecordingState.READY)
             }
             main.post {
@@ -209,13 +278,21 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             CLIENT_REMOTE -> {
                 remoteHold = false
             }
+            CLIENT_USB_GNSS -> {
+                usbHold = false
+                stopUsbGnss()
+                if (Live.gnssSource == GnssSource.PHONE) {
+                    main.post { Live.gnssStatus = "" }
+                    if (listenersUp) startPhoneGnss()
+                }
+            }
             else -> {
                 if (recordHold) stopRecordingSession()
                 recordHold = false
             }
         }
         main.post { Live.status = statusText() }
-        if (!recordHold && !perfHold && !remoteHold) {
+        if (!recordHold && !perfHold && !remoteHold && !usbHold) {
             wake?.let { if (it.isHeld) it.release() }
             wake = null
             if (!previewVisible) {
@@ -239,8 +316,10 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
 
     private fun statusText(): String = buildString {
         when {
-            recordHold && (perfHold || remoteHold) -> append("记录中 + 远程/性能")
+            recordHold && (perfHold || remoteHold || usbHold) -> append("记录中 + 远程/性能/外接定位")
             recordHold -> append("记录中")
+            usbHold && (perfHold || remoteHold) -> append("外接定位 + 远程/性能")
+            usbHold -> append("外接 UM982 定位")
             perfHold && remoteHold -> append("性能测试 + 远程流")
             perfHold -> append("性能测试采集中")
             remoteHold -> append("远程实时流")
@@ -254,7 +333,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         val permitted = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         if (!permitted && (recordHold || perfHold || remoteHold)) throw SecurityException("需要精确定位权限")
-        if ((recordHold || perfHold || remoteHold) && wake == null) {
+        if ((recordHold || perfHold || remoteHold || usbHold) && wake == null) {
             wake = (getSystemService(POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CMTS:capture").apply { acquire() }
         }
@@ -273,19 +352,157 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             }
         }
         listenersUp = true
-        if (permitted && !gpsUp) {
-        check(locations.registerGnssStatusCallback(satelliteCallback, handler)) { "无法注册卫星状态回调" }
-        locations.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, this, thread.looper)
-        gpsUp = true
-        }
+        applyLocationSource()
+        val wait = if (Live.gnssSource == GnssSource.EXTERNAL) "等待外接 UM982" else "等待 GNSS"
         main.post {
-            Live.status = statusText() + "；缺失=${missing.joinToString().ifEmpty { "无" }}；等待 GNSS"
+            Live.status = statusText() + "；缺失=${missing.joinToString().ifEmpty { "无" }}；$wait"
         }
+    }
+
+    private fun applyLocationSource() {
+        if (Live.gnssSource == GnssSource.EXTERNAL) {
+            stopPhoneGnss()
+            if (usbHold) startUsbGnss()
+        } else {
+            stopUsbGnss()
+            startPhoneGnss()
+        }
+    }
+
+    private fun startPhoneGnss() {
+        val permitted = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (permitted && !gpsUp) {
+            check(locations.registerGnssStatusCallback(satelliteCallback, handler)) { "无法注册卫星状态回调" }
+            locations.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, this, thread.looper)
+            gpsUp = true
+        }
+    }
+
+    private fun stopPhoneGnss() {
+        if (!gpsUp) return
+        runCatching { locations.unregisterGnssStatusCallback(satelliteCallback) }
+        runCatching { locations.removeUpdates(this) }
+        gpsUp = false
+        latestSamples.remove("phone.gps")
+        latestSamples.remove("phone.satellites")
+        main.post { Live.samples = Live.samples - "phone.gps" - "phone.satellites" }
+    }
+
+    private fun startUsbGnss() {
+        if (usbStarted) return
+        val usb = getSystemService(UsbManager::class.java)
+        val device = GnssSourceSettings.findCh344q(usb)
+        if (device == null) {
+            main.post { Live.gnssStatus = "未检测到紫板 CH344Q，请检查 OTG 连接" }
+            return
+        }
+        if (!usb.hasPermission(device)) {
+            main.post { Live.gnssStatus = "没有 USB 权限，请在主界面重新选择外接 UM982" }
+            return
+        }
+        nmeaPorts.clear()
+        nmeaBuffers.clear()
+        nmeaAssemblers.clear()
+        chosenNmeaPort = null
+        UsbSerialHub.addListener(usbListener)
+        val ok = UsbSerialHub.acquire(
+            application,
+            UsbHubOwner.GNSS,
+            device,
+            baud = 115200,
+            assertDtr = false,
+            saveDir = null,
+        )
+        if (!ok) {
+            UsbSerialHub.removeListener(usbListener)
+            return
+        }
+        usbStarted = true
+        main.post { Live.gnssStatus = GnssSourceSettings.connectedWaitingNmea() }
+        handler.removeCallbacks(nmeaWait)
+        handler.postDelayed(nmeaWait, 8_000L)
+    }
+
+    private fun stopUsbGnss() {
+        handler.removeCallbacks(nmeaWait)
+        UsbSerialHub.removeListener(usbListener)
+        UsbSerialHub.release(UsbHubOwner.GNSS)
+        usbStarted = false
+        chosenNmeaPort = null
+        nmeaPorts.clear()
+        nmeaBuffers.clear()
+        nmeaAssemblers.clear()
+    }
+
+    private fun handleUsbBytes(port: Int, data: ByteArray) {
+        val lines = nmeaBuffers.getOrPut(port) { NmeaLineBuffer() }.append(data)
+        for (line in lines) {
+            if (NmeaParser.looksLikeNmea(line)) {
+                nmeaPorts.add(port)
+                val chosen = NmeaPortSelector.choose(nmeaPorts)
+                if (chosen != null) chosenNmeaPort = chosen
+            }
+            val usePort = chosenNmeaPort ?: continue
+            if (port != usePort) continue
+            when (val update = nmeaAssemblers.getOrPut(port) { NmeaFixAssembler() }.onLine(line)) {
+                is NmeaUpdate.Fix -> onExternalFix(update.fix, port)
+                is NmeaUpdate.NoFix -> main.post { Live.gnssStatus = GnssSourceSettings.noFixStatus() }
+                NmeaUpdate.Ignored -> Unit
+            }
+        }
+    }
+
+    private fun handleUsbStatus(message: String) {
+        if (!message.startsWith("接收已结束")) return
+        usbStarted = false
+        if (Live.gnssSource == GnssSource.EXTERNAL) {
+            val unplugged = message.contains("USB 已断开") || message.contains("拔出")
+            main.post {
+                Live.gnssStatus = if (unplugged) {
+                    "外接模块已拔出，未改回手机 GNSS。请重新连接或改选「手机 GNSS」。"
+                } else {
+                    message
+                }
+            }
+        }
+    }
+
+    private fun onExternalFix(fix: NmeaFix, port: Int) {
+        val received = SystemClock.elapsedRealtimeNanos()
+        if (perfHold || PerformanceController.holdCapture) {
+            PerformanceController.onRawGnss(
+                sampleTimeNanos = received,
+                receivedTimeNanos = received,
+                utcMillis = fix.utcMillis,
+                speedMps = fix.speedMps,
+                speedAccuracyMps = null,
+                hasSpeed = fix.speedMps != null,
+                mock = false,
+                rawReference = "um982:${UsbSerialPorts.portLabel(port)}",
+            )
+        }
+        accept(
+            Sample(
+                "phone.gps",
+                received,
+                fix.utcMillis,
+                listOf(fix.latitude, fix.longitude, fix.altitudeM, fix.speedMps, fix.headingDeg, null, null, null),
+                fix.quality,
+            )
+        )
+        val used = fix.satsUsed?.toDouble()
+        val visible = (fix.satsVisible ?: fix.satsUsed)?.toDouble()
+        if (used != null || visible != null) {
+            accept(Sample("phone.satellites", received, null, listOf(visible, used), "um982_nmea"))
+        }
+        main.post { Live.gnssStatus = GnssSourceSettings.locatedStatus(port) }
     }
 
     private fun tearDownListeners() {
         LaunchCalibration.cancel()
         if (!listenersUp) return
+        stopUsbGnss()
         runCatching { locations.unregisterGnssStatusCallback(satelliteCallback) }
         runCatching { sensors.unregisterListener(this) }
         runCatching { locations.removeUpdates(this) }
@@ -331,6 +548,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 .put("vehicleAttitude", "vehicle.attitude: roll X, pitch Y, yaw Z degrees; right-handed; roll positive left side up, pitch positive nose down, yaw positive left from magnetic north; Euler singularity at pitch +/-90 deg")
                 .put("gpsValues", "v1 lat, v2 lon, v3 alt, v4 speed m/s, v5 bearing, v6 horiz accuracy m, v7 vertical accuracy m, v8 speed accuracy m/s (API26+ when hasSpeedAccuracy)")
                 .put("status", "incomplete")
+                .put("gnssSource", if (Live.gnssSource == GnssSource.EXTERNAL) "um982_usb" else "phone.gps")
                 .put("environment", if (Live.emulator) "emulator_simulated" else "device_unverified")
                 .put("imuFrame", "Android device XYZ; acceleration includes gravity")
                 .toString(2),
@@ -372,6 +590,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                             "mountZero rotates live display into calibrated vehicle axes; Dashboard accel uses gravity removal from rotation vector/attitude. samples.csv phone.* and vehicle.* remain raw (accel includes gravity).",
                         )
                     }
+                    meta.put("gnssSource", if (Live.gnssSource == GnssSource.EXTERNAL) "um982_usb" else "phone.gps")
                     meta.put("status", "closed")
                     metaFile.writeText(meta.toString(2))
                 }
@@ -380,7 +599,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             Live.activeSession = null
             folder = null
             RecordingStateMachine.markSession(null, null)
-            val next = if (perfHold || remoteHold || previewVisible) RecordingState.READY else RecordingState.IDLE
+            val next = if (perfHold || remoteHold || previewVisible || usbHold) RecordingState.READY else RecordingState.IDLE
             RecordingStateMachine.tryTransition(next)
             main.post { Live.running = false }
             if (!perfHold) PerformanceController.bindCaptureSession(null)
@@ -395,6 +614,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         recordHold = false
         perfHold = false
         remoteHold = false
+        usbHold = false
         tearDownListeners()
         stopSelf()
     }
@@ -496,6 +716,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     override fun onLocationChanged(l: Location) {
+        if (Live.gnssSource == GnssSource.EXTERNAL) return
         val received = SystemClock.elapsedRealtimeNanos()
         val speedAccuracy = if (Build.VERSION.SDK_INT >= 26 && l.hasSpeedAccuracy()) {
             l.speedAccuracyMetersPerSecond.toDouble()
@@ -544,8 +765,10 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(usbReceiver) }
         handler.post {
             if (recordHold) stopRecordingSession()
+            usbHold = false
             tearDownListeners()
             thread.quitSafely()
         }
@@ -564,6 +787,8 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         const val CLIENT_PERF = "perf"
         /** Remote WS subscriber hold: sensors on, no session CSV. */
         const val CLIENT_REMOTE = "remote"
+        /** External UM982 USB reader hold: keeps FGS + wake lock without a recording session. */
+        const val CLIENT_USB_GNSS = "usb_gnss"
 
         fun acquireIntent(context: android.content.Context, client: String): Intent =
             Intent(context, CaptureService::class.java)

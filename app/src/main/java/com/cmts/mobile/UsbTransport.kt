@@ -23,7 +23,7 @@ class UsbTransport(private val app: Application) {
         baud: Int,
         focusPort: Int?,
         assertDtr: Boolean,
-        dir: File,
+        dir: File?,
         stamp: Long,
         onBytes: (port: Int, data: ByteArray) -> Unit,
         onCounts: (LongArray) -> Unit,
@@ -54,15 +54,20 @@ class UsbTransport(private val app: Application) {
                         check(manager.setDTR(d, port, true)) { "无法拉低 ${UsbSerialPorts.portLabel(port)} 的 DTR" }
                     }
                 }
-                dir.mkdirs()
                 val prefix = "usb-$stamp"
-                files = Array(serialCount) { port -> File(dir, UsbSerialPorts.captureName(prefix, port)) }
+                files = if (dir != null) {
+                    dir.mkdirs()
+                    Array(serialCount) { port -> File(dir, UsbSerialPorts.captureName(prefix, port)) }
+                } else {
+                    emptyArray()
+                }
                 val focusName = if (focusPort != null) {
                     UsbSerialPorts.captureName(prefix, focusPort)
                 } else {
                     "usb-$stamp-uart*.bin"
                 }
-                status("已连接 $chip · $baud · 8N1 · ${serialCount} 路串口；正在保存 $focusName。已对全部串口配置波特率并同时计数。")
+                val saving = if (dir != null) "正在保存 $focusName。" else "未写入调试文件。"
+                status("已连接 $chip · $baud · 8N1 · ${serialCount} 路串口；$saving 已对全部串口配置波特率并同时计数。")
                 val counts = LongArray(serialCount)
                 val streams = files.map { it.outputStream().buffered() }
                 try {
@@ -73,7 +78,7 @@ class UsbTransport(private val app: Application) {
                             val bytes = manager.readData(d, port)
                             if (bytes != null && bytes.isNotEmpty()) {
                                 any = true
-                                streams[port].write(bytes)
+                                if (port < streams.size) streams[port].write(bytes)
                                 counts[port] += bytes.size.toLong()
                                 onBytes(port, bytes)
                                 if (counts[port] == bytes.size.toLong()) {
