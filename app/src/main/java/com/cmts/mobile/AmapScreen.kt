@@ -83,23 +83,27 @@ private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, co
   view.map.setOnMapTouchListener { follow = false }
   onDispose { owner.lifecycle.removeObserver(observer); view.onPause(); view.onDestroy() }
  }
- val converted = remember(view) { mutableMapOf<TrackPoint, LatLng>() }
+ val converted = remember(view) { TrackCoordinateCache { point ->
+  CoordinateConverter(context).from(CoordinateConverter.CoordType.GPS).coord(LatLng(point.latitude,point.longitude)).convert()
+ } }
+ val points = remember(track, view) { converted.get(track) }
  val overlays = remember(view) { arrayOfNulls<Any>(2) }
- LaunchedEffect(track, follow, trackColor) {
-  converted.keys.retainAll(track.toSet())
-  val points = track.map { point -> converted.getOrPut(point) { CoordinateConverter(context).from(CoordinateConverter.CoordType.GPS).coord(LatLng(point.latitude,point.longitude)).convert() } }
+ LaunchedEffect(track) {
   val line = overlays[0] as? Polyline
   if (points.size > 1) {
    if (line == null) overlays[0] = view.map.addPolyline(PolylineOptions().addAll(points).color(trackColor).width(5f))
-   else { line.points = points; line.color = trackColor }
+   else line.points = points
   } else { line?.remove(); overlays[0] = null }
   if (points.isEmpty()) { (overlays[1] as? Marker)?.remove(); overlays[1] = null }
   points.lastOrNull()?.let {
    val marker = overlays[1] as? Marker
    if (marker == null) overlays[1] = view.map.addMarker(MarkerOptions().position(it).title("GNSS"))
    else marker.position = it
-   if(follow) view.map.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 16f))
   }
+ }
+ LaunchedEffect(trackColor, track) { (overlays[0] as? Polyline)?.color = trackColor }
+ LaunchedEffect(points.lastOrNull(), follow) {
+  if (follow) points.lastOrNull()?.let { view.map.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 16f)) }
  }
  Box(modifier) {
   AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
@@ -111,9 +115,9 @@ private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, co
 @Composable
 internal fun MapControl(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
  FilledTonalButton(onClick = onClick, enabled = enabled, modifier = modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
-  shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+  shape = MaterialTheme.shapes.medium,
   contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-  colors = ButtonDefaults.filledTonalButtonColors(containerColor = androidx.compose.ui.graphics.Color(0xE615171C), contentColor = androidx.compose.ui.graphics.Color(0xFFD4AF37)), content = content)
+  colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, contentColor = MaterialTheme.colorScheme.onSurface), content = content)
 }
 
 

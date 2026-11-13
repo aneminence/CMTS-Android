@@ -11,9 +11,8 @@ import java.security.MessageDigest
  * Speed samples are raw GNSS observations — not Replay snapshots.
  */
 class PerformanceRepository(private val root: File) {
-    init { root.mkdirs() }
-
     fun attemptsDir(): File = File(root, "attempts").also { it.mkdirs() }
+    internal fun attemptPath(id: String): File = File(root, "attempts/$id")
 
     fun listAttempts(): List<AttemptSummary> {
         val dir = attemptsDir()
@@ -24,8 +23,7 @@ class PerformanceRepository(private val root: File) {
             ?: emptyList()
     }
 
-    fun createAttempt(config: PerformanceConfig): AttemptHandle {
-        val id = java.util.UUID.randomUUID().toString()
+    fun createAttempt(config: PerformanceConfig, id: String = java.util.UUID.randomUUID().toString()): AttemptHandle {
         val dir = File(attemptsDir(), id).also { it.mkdirs() }
         File(dir, "config.json").writeText(configToJson(config).toString(2))
         val samples = File(dir, "speed_samples.csv")
@@ -59,7 +57,12 @@ class PerformanceRepository(private val root: File) {
 
     fun closeSamples(handle: AttemptHandle) {
         if (handle.samplesAlreadyClosed) return
-        try { handle.sampleWriter.flush(); handle.sampleWriter.close() } catch (_: Exception) {}
+        var failure: Exception? = null
+        try { handle.sampleWriter.flush() } catch (e: Exception) { failure = e }
+        try { handle.sampleWriter.close() } catch (e: Exception) {
+            if (failure == null) failure = e else failure.addSuppressed(e)
+        } finally { handle.samplesAlreadyClosed = true }
+        failure?.let { throw it }
     }
 
     /**
@@ -326,7 +329,7 @@ data class AttemptHandle(
     val config: PerformanceConfig,
     val sampleWriter: BufferedWriter,
     val samplesFile: File,
-    val samplesAlreadyClosed: Boolean = false,
+    var samplesAlreadyClosed: Boolean = false,
 )
 
 data class AttemptSummary(

@@ -6,7 +6,6 @@ import android.util.Log
 import cn.wch.uartlib.WCHUARTManager
 import java.io.File
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /** Raw byte transport only: deliberately exposes no GNSS command/write API. */
@@ -16,8 +15,7 @@ class UsbTransport(private val app: Application) {
         WCHUARTManager.setDebug(true)
     }
     private val worker = Executors.newSingleThreadExecutor()
-    private val running = AtomicBoolean(false)
-    private var device: UsbDevice? = null
+    private val connection = ConnectionEpoch()
     private val pendingParameters = AtomicReference<Pair<Int, Boolean>?>(null)
 
     fun reconfigure(baud: Int, dtr: Boolean) {
@@ -36,14 +34,16 @@ class UsbTransport(private val app: Application) {
         onCounts: (LongArray) -> Unit,
         status: (String) -> Unit,
     ) {
-        if (!running.compareAndSet(false, true)) return
+        val epoch = connection.tryStart() ?: return
         worker.execute {
             var failure: String? = null
             var files: Array<File> = emptyArray()
+            var deviceOpened = false
             try {
+                if (!connection.isActive(epoch)) return@execute
                 require(manager.enumDevice().any { it.deviceName == d.deviceName }) { "驱动不支持此设备" }
                 check(manager.openDevice(d)) { "无法打开设备，请检查 OTG 连接及权限" }
-                device = d
+                deviceOpened = true
                 val serialCount = manager.getSerialCount(d)
                 require(serialCount > 0) { "未读到串口数量" }
                 if (focusPort != null) {
@@ -78,7 +78,7 @@ class UsbTransport(private val app: Application) {
                 val counts = LongArray(serialCount)
                 val streams = files.map { it.outputStream().buffered() }
                 try {
-                    while (running.get()) {
+                    while (connection.isActive(epoch)) {
                         check(manager.isConnected(d)) { "USB 已断开" }
                         pendingParameters.getAndSet(null)?.let { (speed, dtr) ->
                             for (port in 0 until serialCount) {
@@ -113,12 +113,11 @@ class UsbTransport(private val app: Application) {
                 failure = "USB 接收停止：${e.message ?: e.javaClass.simpleName}"
             } finally {
                 try {
-                    device?.let { manager.disconnect(it) }
+                    if (deviceOpened) manager.disconnect(d)
                 } catch (e: Exception) {
                     status("关闭设备失败：${e.message}")
                 }
-                device = null
-                running.set(false)
+                connection.finish(epoch)
                 val saved = files.filter { it.exists() && it.length() > 0L }.joinToString("、") { "${it.name}（${it.length()} 字节）" }
                 val savedText = if (saved.isBlank()) "各口文件均为 0 字节" else "已写入 $saved"
                 status("接收已结束：${failure ?: "正常停止"}；$savedText")
@@ -126,7 +125,7 @@ class UsbTransport(private val app: Application) {
         }
     }
 
-    fun stop() { running.set(false) }
+    fun stop() { connection.stop(); pendingParameters.set(null) }
 
     fun close() {
         stop()

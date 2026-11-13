@@ -3,6 +3,7 @@ package com.cmts.mobile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.lang.ref.WeakReference
 
 /**
  * One replay snapshot. [mountZero] is the session's saved install zero (from metadata.json), so
@@ -55,20 +56,20 @@ internal fun mountZeroFromMetadata(meta: JSONObject?): MountZero {
 
 internal object Replay {
  private var cacheKey: String? = null
- private var cacheData: ReplayData? = null
+ private var cacheData = WeakReference<ReplayData>(null)
  @Synchronized
- fun read(session: File, progress: (Int) -> Unit = {}): ReplayData {
+ fun read(session: File, temporaryDirectory: File = File(requireNotNull(System.getProperty("java.io.tmpdir"))), progress: (Int) -> Unit = {}): ReplayData {
   require(File(session,"closed.marker").exists()) { "请先停止并保存记录" }
   val csv = File(session,"samples.csv")
   val metaFile = File(session,"metadata.json")
   val key = "${session.absolutePath}:${csv.length()}:${csv.lastModified()}:${metaFile.lastModified()}"
-  if(cacheKey == key) cacheData?.let { progress(100); return it }
+  if(cacheKey == key) cacheData.get()?.let { progress(100); return it }
   val fileSize = csv.length().coerceAtLeast(1)
-  val sources = REPLAY_SOURCES
   val mountZero = runCatching { mountZeroFromMetadata(if (metaFile.isFile) JSONObject(metaFile.readText()) else null) }.getOrDefault(MountZero())
   var readChars = 0L
   var lastPercent = -1
   val rawLatest = mutableMapOf<String,String>()
+  val changed = mutableSetOf<String>()
   fun parse(line: String): Sample {
    val c=line.split(',')
    return Sample(c[1],c[2].toLong(),c[4].toLongOrNull(),c.drop(6).map { it.toDoubleOrNull()?.takeIf(Double::isFinite) },c[5])
@@ -78,33 +79,37 @@ internal object Replay {
   val latest = mutableMapOf<String,Sample>()
   var last = -1L
   var lastTime = 0L
-  File(session,"samples.csv").bufferedReader().useLines { lines -> lines.drop(1).forEach { line ->
+  fun updateChangedSamples() {
+   changed.forEach { source -> latest[source] = parse(rawLatest.getValue(source)) }
+   changed.clear()
+  }
+  orderedReplayRows(csv, temporaryDirectory) { row ->
+   val line = row.raw
    readChars += line.length + 1
    val percent = ((readChars * 100) / fileSize).toInt().coerceIn(0,99)
    if(percent != lastPercent) { progress(percent); lastPercent=percent }
-   val first=line.indexOf(','); val second=line.indexOf(',',first+1); val third=line.indexOf(',',second+1)
-   if(first < 0 || second < 0 || third < 0) return@forEach
-   val source=line.substring(first+1,second)
-   if(source !in sources) return@forEach
-   val t=line.substring(second+1,third).toLongOrNull()?.takeIf { it >= 0 } ?: return@forEach
-   rawLatest[source]=line; lastTime=maxOf(lastTime,t)
+   val source = row.source
+   val t = row.nanos
+   rawLatest[source]=line; changed.add(source); lastTime=t
    if(source == "phone.gps") {
     val sample = parse(line)
+    latest[source] = sample
+    changed.remove(source)
 
     val lat=sample.values.getOrNull(0); val lon=sample.values.getOrNull(1)
     if(lat != null && lon != null && lat in -90.0..90.0 && lon in -180.0..180.0) track.add(TrackPoint(lat,lon,t))
    }
    if(last < 0 || source == "phone.gps" || t-last >= 50_000_000L) {
     require(frames.size < 288000) { "记录过长，当前回放最多约两小时，请分段" }
-    rawLatest.forEach { (source, raw) -> latest[source] = parse(raw) }
+    updateChangedSamples()
     frames.add(ReplayFrame(t,latest.toMap(),mountZero)); last=t
    }
-  } }
+  }
   require(frames.isNotEmpty()) { "记录中没有可回放数据" }
-  rawLatest.forEach { (source, raw) -> latest[source] = parse(raw) }
+  updateChangedSamples()
   if(lastTime > frames.last().nanos) frames.add(ReplayFrame(lastTime,latest.toMap(),mountZero))
   progress(100)
-  return ReplayData(session,frames,track.sortedBy { it.nanos },mountZero).also { cacheKey=key; cacheData=it }
+  return ReplayData(session,frames,track,mountZero).also { cacheKey=key; cacheData=WeakReference(it) }
  }
 }
 

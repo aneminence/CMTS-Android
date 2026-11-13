@@ -50,6 +50,8 @@ fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>
  var failed by remember { mutableStateOf(false) }
  var retry by remember { mutableIntStateOf(0) }
  val track = offlineTrack ?: Live.track
+ val projectionCache = remember { TrackCoordinateCache { point -> project(point.latitude, point.longitude) } }
+ val projected = remember(track) { projectionCache.get(track) }
  val latest = track.lastOrNull()
  LaunchedEffect(latest, follow) {
   if (latest != null && follow) {
@@ -137,15 +139,15 @@ fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>
     val origin = IntOffset((x * tileSize - left).roundToInt(), (y * tileSize - top).roundToInt())
     tiles[key]?.let { drawImage(it, dstOffset = origin, dstSize = IntSize(ceil(tileSize).toInt() + 1, ceil(tileSize).toInt() + 1)) }
    }
-   fun screen(p: TrackPoint): Offset {
-    val w = project(p.latitude, p.longitude)
+    fun screen(index: Int): Offset {
+     val w = projected[index]
     return Offset((wrappedDelta(w.x - center.x) * worldSize + size.width / 2).toFloat(), ((w.y - center.y) * worldSize + size.height / 2).toFloat())
    }
-   track.zipWithNext().forEach { (a, b) ->
-    if (b.nanos - a.nanos in 1..10_000_000_000L) drawLine(trackColor, screen(a), screen(b), 5f)
+    for (i in 1 until track.size) {
+     if (track[i].nanos - track[i-1].nanos in 1..10_000_000_000L) drawLine(trackColor, screen(i-1), screen(i), 5f)
    }
    latest?.let {
-    val p = screen(it)
+     val p = screen(track.lastIndex)
     val accuracy = if (offlineTrack == null) Live.samples["phone.gps"]?.values?.getOrNull(5) else null
     if (accuracy != null) {
      val radius = (accuracy * worldSize / (40075016.686 * cos(Math.toRadians(it.latitude)))).toFloat().coerceIn(0f, 2000f)

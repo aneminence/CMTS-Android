@@ -26,6 +26,9 @@ internal class RunCycle<T>(stayArmed: Boolean = true) {
 
     val clearPending: Boolean get() = pendingClear
 
+    /** An explicitly started capture session clears only visible scores, not the armed test. */
+    fun clearResults() { scores.clear() }
+
     /** A new set of segments was armed; the table is cleared once that run starts. */
     fun onArmed() {
         pendingClear = true

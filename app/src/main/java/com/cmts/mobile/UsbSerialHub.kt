@@ -89,14 +89,14 @@ object UsbSerialHub {
                 { port, data -> if (startGeneration.get() == gen) dispatchBytes(port, data) },
                 { counts -> if (startGeneration.get() == gen) dispatchCounts(counts) },
                 { message ->
-                    if (startGeneration.get() == gen) {
-                        if (message.startsWith("接收已结束")) {
-                            synchronized(lock) {
+                    synchronized(lock) {
+                        if (startGeneration.get() == gen) {
+                            if (message.startsWith("接收已结束")) {
                                 opened = false
                                 openDeviceName = null
                             }
+                            dispatchStatus(message)
                         }
-                        dispatchStatus(message)
                     }
                 },
             )
@@ -105,21 +105,18 @@ object UsbSerialHub {
     }
 
     fun release(owner: UsbHubOwner) {
-        val shouldStop = synchronized(lock) {
+        synchronized(lock) {
             owners.remove(owner)
-            owners.isEmpty() && opened
+            if (owners.isEmpty() && opened) stopSession()
         }
-        if (shouldStop) stopSession()
     }
 
-    fun stopSession() {
+    fun stopSession() = synchronized(lock) {
         startGeneration.incrementAndGet()
         transport?.stop()
-        synchronized(lock) {
-            owners.clear()
-            opened = false
-            openDeviceName = null
-        }
+        owners.clear()
+        opened = false
+        openDeviceName = null
     }
 
     private fun dispatchBytes(port: Int, data: ByteArray) {

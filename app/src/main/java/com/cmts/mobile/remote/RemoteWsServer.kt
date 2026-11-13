@@ -14,7 +14,6 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -196,30 +195,23 @@ class RemoteWsServer(
         @Volatile var subscribed: Boolean = false
         @Volatile var maxHz: Int = RemoteIdentityStore.DEFAULT_MAX_HZ
         @Volatile var channels: Set<String> = setOf("core")
-        private val controlQ = LinkedBlockingDeque<ByteArray>(64)
-        private val sampleQ = LinkedBlockingDeque<ByteArray>(8)
+        private val frames = OutboundFrameQueue()
         private val writerStarted = AtomicBoolean(false)
         private val closed = AtomicBoolean(false)
 
         fun enqueueControl(text: String) {
             val bytes = buildFrame(0x1, text.toByteArray(StandardCharsets.UTF_8))
-            if (!controlQ.offer(bytes)) {
-                controlQ.pollFirst()
-                controlQ.offer(bytes)
-            }
+            frames.control(bytes)
         }
 
         fun enqueueSample(text: String) {
             if (!subscribed || !authenticated) return
             val bytes = buildFrame(0x1, text.toByteArray(StandardCharsets.UTF_8))
-            if (!sampleQ.offer(bytes)) {
-                sampleQ.pollFirst()
-                sampleQ.offer(bytes)
-            }
+            frames.sample(bytes)
         }
 
         fun enqueueRaw(bytes: ByteArray) {
-            controlQ.offer(bytes)
+            frames.control(bytes, replaceOldest = false)
         }
 
         fun startWriter() {
@@ -227,11 +219,7 @@ class RemoteWsServer(
             Thread({
                 try {
                     while (!closed.get() && !socket.isClosed) {
-                        val next = controlQ.poll() ?: sampleQ.poll()
-                        if (next == null) {
-                            Thread.sleep(2)
-                            continue
-                        }
+                        val next = frames.take() ?: break
                         synchronized(output) {
                             output.write(next)
                             output.flush()
@@ -248,6 +236,7 @@ class RemoteWsServer(
 
         fun closeQuietly() {
             if (!closed.compareAndSet(false, true)) return
+            frames.close()
             runCatching { socket.close() }
         }
     }

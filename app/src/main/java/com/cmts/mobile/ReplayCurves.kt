@@ -7,15 +7,24 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.content.res.Configuration
 import com.cmts.mobile.performance.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.File
 
 /** How a replay curve reads its value; vehicle kinds go through [displayVehicleAxes] like Dashboard. */
@@ -63,13 +72,37 @@ internal fun replayChannelValue(channel: ReplayChannel, frame: ReplayFrame): Dou
  }?.takeIf { it.isFinite() }
 }
 
+private data class ReplayCurvePlot(val series: ReplayCurveSeries, val missingPrefix: IntArray)
+private data class PreparedReplayCurve(val data: ReplayData, val channel: ReplayChannel, val plot: ReplayCurvePlot)
+
 @Composable
 internal fun ReplayCurves(data: ReplayData, index: Int, seek: (Int) -> Unit) {
  var channel by remember { mutableStateOf(replayChannels.first()) }
  var menu by remember { mutableStateOf(false) }
  var zoom by remember { mutableIntStateOf(1) }
  val frames = data.frames
- val values = remember(data,channel) { frames.map { replayChannelValue(channel, it) } }
+ val selectedChannel = channel
+ val channelCache = remember(data) { LinkedHashMap<ReplayChannel, ReplayCurvePlot>(4, .75f, true) }
+ val prepared by produceState<PreparedReplayCurve?>(null, data, selectedChannel) {
+  val plot = channelCache[selectedChannel] ?: withContext(Dispatchers.Default) {
+   val context = currentCoroutineContext()
+   // Cache missing intervals alongside the display series so pixel decimation cannot bridge a gap.
+   val missingPrefix = IntArray(frames.size + 1)
+   val displayValues = DoubleArray(frames.size) { i ->
+    if (i % 1024 == 0) context.ensureActive()
+    val value = replayChannelValue(selectedChannel, frames[i])
+    missingPrefix[i + 1] = missingPrefix[i] + if (value == null) 1 else 0
+    value ?: Double.NaN
+   }
+   ReplayCurvePlot(ReplayCurveSeries(displayValues), missingPrefix)
+  }.also {
+   channelCache[selectedChannel] = it
+   while (channelCache.size > 3) channelCache.remove(channelCache.keys.first())
+  }
+  value = PreparedReplayCurve(data, selectedChannel, plot)
+ }
+ val plot = prepared?.takeIf { it.data === data && it.channel == selectedChannel }?.plot
+ val values = plot?.series
  val first = frames.first().nanos
  val span = ((frames.last().nanos-first)/zoom).coerceAtLeast(1)
  val start = (frames[index].nanos-span/2).coerceIn(first,maxOf(first,frames.last().nanos-span))
@@ -78,28 +111,73 @@ internal fun ReplayCurves(data: ReplayData, index: Int, seek: (Int) -> Unit) {
   val pos = frames.binarySearchBy(target) { it.nanos }
   return (if(pos<0) -pos-1 else pos).coerceIn(frames.indices)
  }
- Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
-  Row {
-   Box {
-    TextButton(onClick={menu=true}) { Text(channel.label) }
+ val range = nearest(0f)..nearest(1f)
+ val bounds = remember(values, range) { values?.bounds(range.first, range.last) ?: (0.0 to 0.0) }
+ val colors = MaterialTheme.colorScheme
+ val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+ val chartHeight = if (isLandscape) 144.dp else 220.dp
+ val low = bounds.first
+ val extent = (bounds.second-low).coerceAtLeast(.01)
+ val numberStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
+ Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+  Surface(color = colors.secondaryContainer, shape = MaterialTheme.shapes.small) {
+   Text("历史回放 · 非实时数据", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), color = colors.onSecondaryContainer, style = MaterialTheme.typography.labelMedium)
+  }
+  Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+   Box(Modifier.weight(1f)) {
+    FilledTonalButton(onClick={menu=true}, modifier = Modifier.fillMaxWidth()) { Text(channel.label + " ▾", maxLines = 1, overflow = TextOverflow.Ellipsis) }
     DropdownMenu(menu,{menu=false}) { replayChannels.forEach { c -> DropdownMenuItem({Text(c.label)}, {channel=c;menu=false}) } }
    }
-   TextButton(onClick={zoom=if(zoom==8) 1 else zoom*2}) { Text("时间窗 1/$zoom") }
+   OutlinedButton(onClick={zoom=if(zoom==8) 1 else zoom*2}) { Text("时间窗 1/$zoom") }
   }
-  Text("${dashboardValue((frames[index].nanos-first)/1e9)} s   ${dashboardValue(values[index])} ${channel.label}")
-  Canvas(Modifier.fillMaxWidth().height(100.dp).pointerInput(start,span,data) { detectTapGestures { seek(nearest(it.x/size.width)) } }) {
-   val range = nearest(0f)..nearest(1f)
-   val subset = values.subList(range.first,range.last+1).filterNotNull()
-   val low = subset.minOrNull() ?: 0.0
-   val extent = ((subset.maxOrNull() ?: low)-low).coerceAtLeast(.01)
-   fun x(i:Int) = ((frames[i].nanos-start).toDouble()/span*size.width).toFloat()
-   var prev: Offset? = null
-   for(i in range step (range.count()/size.width.toInt().coerceAtLeast(1)).coerceAtLeast(1)) {
-    val point=values[i]?.let { Offset(x(i),size.height*(1-((it-low)/extent).toFloat())) }
-    if(prev!=null && point!=null) drawLine(Color(0xFFD4AF37),prev,point,2f)
-    prev=point
+  Card(colors = CardDefaults.cardColors(containerColor = colors.surfaceContainerLow)) {
+  Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
+    Column(Modifier.weight(1f)) {
+     Text("游标处 · ${channel.label}", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+     Text(dashboardValue(values?.get(index)), style = MaterialTheme.typography.headlineMedium.copy(fontFeatureSettings = "tnum"), color = colors.onSurface)
+    }
+    Text("${dashboardValue((frames[index].nanos-first)/1e9)} s", style = numberStyle, color = colors.primary)
    }
-   drawLine(Color.White,Offset(x(index),0f),Offset(x(index),size.height))
+  if (values == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+  Row(Modifier.fillMaxWidth().height(chartHeight), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+   Column(Modifier.width(56.dp).fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween, horizontalAlignment = Alignment.End) {
+    for (tick in 4 downTo 0) {
+     Text(dashboardValue(low + extent * tick / 4.0, digits = if (extent < 1.0) 2 else 1), style = numberStyle, color = colors.onSurfaceVariant, textAlign = TextAlign.End, maxLines = 1)
+    }
+   }
+  Canvas(Modifier.weight(1f).fillMaxHeight()
+   .semantics { contentDescription = "${channel.label}随时间曲线；点击定位回放游标" }
+   .pointerInput(start,span,data) { detectTapGestures { seek(nearest(it.x/size.width)) } }) {
+   fun x(i:Int) = ((frames[i].nanos-start).toDouble()/span*size.width).toFloat()
+   clipRect {
+    for (tick in 0..4) {
+     val y = size.height * tick / 4f
+     drawLine(colors.outlineVariant.copy(alpha = .6f), Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+    }
+    var prev: Offset? = null
+    var prevIndex = range.first
+    for(i in range step (range.count()/size.width.toInt().coerceAtLeast(1)).coerceAtLeast(1)) {
+     val point=values?.get(i)?.let { Offset(x(i),size.height*(1-((it-low)/extent).toFloat())) }
+     val continuous = plot?.let { it.missingPrefix[i + 1] == it.missingPrefix[prevIndex] } == true
+     if(prev!=null && point!=null && continuous) drawLine(colors.primary,prev,point,2.dp.toPx())
+     prev=point
+     prevIndex=i
+    }
+    drawLine(colors.onSurface.copy(alpha = .8f),Offset(x(index),0f),Offset(x(index),size.height),1.dp.toPx())
+    values?.get(index)?.let { value ->
+     drawCircle(colors.primary, 4.dp.toPx(), Offset(x(index),size.height*(1-((value-low)/extent).toFloat())))
+    }
+   }
+  }
+  }
+  Row(Modifier.fillMaxWidth().padding(start = 64.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+   listOf(start, start + span / 2, start + span).forEach { time ->
+    Text("${dashboardValue((time-first)/1e9)} s", style = numberStyle, color = colors.onSurfaceVariant)
+   }
+  }
+  Text("点击曲线定位 · 缺失数据保留断点", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+  }
   }
   ReplayScores(data.session)
  }
@@ -111,8 +189,12 @@ private fun ReplayScores(session: File) {
  var busy by remember { mutableStateOf(false) }
  var rows by remember(session) { mutableStateOf(emptyList<String>()) }
  val scope=rememberCoroutineScope()
- OutlinedTextField(input,{input=it},label={Text("起速-终速 km/h，多段用逗号分隔")},enabled=!busy)
- TextButton(enabled=!busy,onClick={
+ Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+ Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+ Text("离线性能计分", style = MaterialTheme.typography.titleMedium)
+ Text("使用会话原始 GNSS 速度；生成独立成绩版本。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+ OutlinedTextField(input,{input=it},label={Text("起速-终速 km/h")},supportingText = { Text("多段用逗号分隔，例如 0-60,0-100,100-0") },enabled=!busy, modifier = Modifier.fillMaxWidth())
+ FilledTonalButton(enabled=!busy,modifier = Modifier.fillMaxWidth(),onClick={
   busy=true
   rows=emptyList()
   scope.launch {
@@ -137,7 +219,12 @@ private fun ReplayScores(session: File) {
    finally { busy=false }
   }
  }) { Text(if(busy) "正在计算…" else "应用边界并计算") }
- rows.forEach { Text(it) }
+ rows.forEach {
+  HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+  Text(it, style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"))
+ }
+ }
+ }
 }
 
 private fun rawSpeed(session: File): List<SpeedSample> = File(session,"samples.csv").useLines { lines ->

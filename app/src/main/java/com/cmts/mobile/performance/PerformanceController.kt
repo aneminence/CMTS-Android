@@ -67,13 +67,14 @@ object PerformanceController {
     private data class LiveSegment(
         val config: PerformanceConfig,
         val engine: PerformanceEngine,
-        val handle: AttemptHandle,
+        val handle: PerformancePersistence.Pending,
         var finished: Boolean = false,
         /** True once this segment reached Running / FinishCandidate / Completed. */
         var started: Boolean = false,
     )
 
     @Volatile private var repository: PerformanceRepository? = null
+    @Volatile private var persistence: PerformancePersistence? = null
     @Volatile private var segments: List<LiveSegment> = emptyList()
     @Volatile private var clockDomain: String = "unset"
     @Volatile private var captureSessionId: String? = null
@@ -117,6 +118,7 @@ object PerformanceController {
 
     /** Score table + re-arm bookkeeping; accessed under [lock], rows copied to [sessionResults] on main. */
     private val cycle = RunCycle<AttemptSummary>(stayArmed = true)
+    private var resultEpoch = 0L
 
     /** Configs of the current arm, reused for automatic re-arm. */
     @Volatile private var armedConfigs: List<PerformanceConfig> = emptyList()
@@ -124,9 +126,14 @@ object PerformanceController {
     private var settingsFile: File? = null
 
     fun ensureRepo(filesDir: File): PerformanceRepository {
-        loadSettings(filesDir)
         repository?.let { return it }
-        return PerformanceRepository(File(filesDir, "performance")).also { repository = it }
+        loadSettings(filesDir)
+        return synchronized(lock) {
+            repository ?: PerformanceRepository(File(filesDir, "performance")).also {
+                persistence = PerformancePersistence(it, onFailure = { error -> publishMessage("成绩数据保存失败: ${error.message}") })
+                repository = it
+            }
+        }
     }
 
     fun loadSettings(filesDir: File) {
@@ -194,8 +201,15 @@ object PerformanceController {
     }
 
     fun bindCaptureSession(sessionId: String?) {
-        captureSessionId = sessionId
-        if (sessionId != null) clockDomain = "session:$sessionId"
+        synchronized(lock) {
+            if (sessionId != null && sessionId != captureSessionId) {
+                resultEpoch++
+                cycle.clearResults()
+                main.post { sessionResults = emptyList() }
+            }
+            captureSessionId = sessionId
+            if (sessionId != null) clockDomain = "session:$sessionId"
+        }
     }
 
     fun onRawGnss(
@@ -209,29 +223,29 @@ object PerformanceController {
         rawReference: String?,
     ) {
         if (!armed.get()) return
-        val live = segments
-        if (live.isEmpty()) return
-        val seq = sampleSeq.incrementAndGet()
-        val sample = SpeedSample(
-            sourceId = "phone.gps",
-            channelKind = "gnss",
-            sequence = seq,
-            clockDomain = clockDomain,
-            sampleTimeNanos = sampleTimeNanos,
-            receivedTimeNanos = receivedTimeNanos,
-            utcMillis = utcMillis,
-            speedMps = if (hasSpeed) speedMps else null,
-            speedAccuracyMps = speedAccuracyMps,
-            valid = hasSpeed && speedMps != null && speedMps.isFinite(),
-            mock = mock,
-            rawReference = rawReference,
-        )
-        val repo = repository
         synchronized(lock) {
+            if (!armed.get()) return
+            val live = segments
+            if (live.isEmpty()) return
+            val seq = sampleSeq.incrementAndGet()
+            val sample = SpeedSample(
+                sourceId = "phone.gps",
+                channelKind = "gnss",
+                sequence = seq,
+                clockDomain = clockDomain,
+                sampleTimeNanos = sampleTimeNanos,
+                receivedTimeNanos = receivedTimeNanos,
+                utcMillis = utcMillis,
+                speedMps = if (hasSpeed) speedMps else null,
+                speedAccuracyMps = speedAccuracyMps,
+                valid = hasSpeed && speedMps != null && speedMps.isFinite(),
+                mock = mock,
+                rawReference = rawReference,
+            )
             for (seg in live) {
                 if (seg.finished) continue
                 try {
-                    repo?.appendSample(seg.handle, sample)
+                    persistence?.append(seg.handle, sample)
                 } catch (e: Exception) {
                     publishMessage("速度样本写入失败: ${e.message}")
                 }
@@ -282,7 +296,7 @@ object PerformanceController {
         val repo = ensureRepo(filesDir)
         setStayArmed(true, filesDir)
         synchronized(lock) {
-            startSegmentsLocked(repo, configs)
+            startSegmentsLocked(configs)
             cycle.onArmed()
         }
         armedConfigs = configs
@@ -311,9 +325,9 @@ object PerformanceController {
         return arm(filesDir, configs)
     }
 
-    private fun startSegmentsLocked(repo: PerformanceRepository, configs: List<PerformanceConfig>) {
+    private fun startSegmentsLocked(configs: List<PerformanceConfig>) {
         val created = configs.map { cfg ->
-            val h = repo.createAttempt(cfg)
+            val h = checkNotNull(persistence).create(cfg)
             val eng = PerformanceEngine()
             eng.onEvent(EngineEvent.Arm(cfg))
             LiveSegment(cfg, eng, h)
@@ -326,6 +340,7 @@ object PerformanceController {
     private fun observeLocked(seg: LiveSegment, phase: PerformancePhase) {
         if (phase in RunCycle.RUN_STARTED_PHASES) seg.started = true
         if (cycle.observe(phase)) {
+            resultEpoch++
             // New run began: drop the previous run's scores from the live table.
             main.post { sessionResults = emptyList() }
         }
@@ -360,12 +375,14 @@ object PerformanceController {
     fun listAttempts(filesDir: File): List<AttemptSummary> = ensureRepo(filesDir).listAttempts()
 
     private fun persistSegment(seg: LiveSegment, result: PerformanceResult?) {
-        val repo = repository ?: return
-        if (result != null) {
-            try {
-                repo.writeResult(seg.handle, result)
-                historyRevision++
-                if (result.phase == PerformancePhase.Completed) {
+        val io = persistence ?: return
+        val epoch = resultEpoch
+        io.finish(seg.handle, result) {
+            main.post { historyRevision++ }
+            if (result?.phase == PerformancePhase.Completed) {
+                synchronized(lock) {
+                    // A slow save from a previous run must not repopulate a newly cleared table.
+                    if (epoch != resultEpoch) return@synchronized
                     val summary = AttemptSummary(
                         id = seg.handle.id,
                         dir = seg.handle.dir,
@@ -388,12 +405,7 @@ object PerformanceController {
                             "${trim(seg.config.startSpeedKmh)}→${trim(seg.config.endSpeedKmh)}",
                     )
                 }
-            } catch (e: Exception) {
-                publishMessage("保存成绩失败: ${e.message}")
-                runCatching { repo.closeSamples(seg.handle) }
             }
-        } else {
-            runCatching { repo.closeSamples(seg.handle) }
         }
     }
 
@@ -417,9 +429,9 @@ object PerformanceController {
             releaseLocked(msg)
             return
         }
-        discardIdleSegmentsLocked(repo)
+        discardIdleSegmentsLocked()
         try {
-            startSegmentsLocked(repo, configs)
+            startSegmentsLocked(configs)
         } catch (e: Exception) {
             releaseLocked("$msg · 自动待命失败: ${e.message}")
             return
@@ -433,14 +445,12 @@ object PerformanceController {
      * In continuous mode a segment that never started (e.g. waited past the arm timeout) would
      * leave an empty Invalid attempt every round; drop those so 历史 is not flooded.
      */
-    private fun discardIdleSegmentsLocked(repo: PerformanceRepository) {
-        var removed = false
+    private fun discardIdleSegmentsLocked() {
         for (seg in segments) {
             if (seg.started) continue
             if (seg.engine.snapshot().phase != PerformancePhase.Invalid) continue
-            removed = runCatching { repo.discardAttempt(seg.handle) }.getOrDefault(false) || removed
+            persistence?.discard(seg.handle) { main.post { historyRevision++ } }
         }
-        if (removed) main.post { historyRevision++ }
     }
 
     private fun releaseLocked(msg: String) {

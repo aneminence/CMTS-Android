@@ -95,6 +95,16 @@ object RecordingStateMachine {
         this.startedAtMs = startedAtMs
     }
 
+    /** Called after the recording file opens successfully, following the permitted ready step. */
+    @Synchronized
+    fun recordingOpened(fileId: String, startedAtMs: Long): Boolean {
+        if (state == RecordingState.RECORDING) return activeFileId == fileId
+        if (state == RecordingState.INITIALIZING) tryTransition(RecordingState.READY)
+        if (!RecordingTransitions.canTransition(state, RecordingState.RECORDING)) return false
+        markSession(fileId, startedAtMs)
+        return tryTransition(RecordingState.RECORDING)
+    }
+
     fun statusPayload(): Map<String, Any?> = mapOf(
         "state" to state.name,
         "fileId" to activeFileId,

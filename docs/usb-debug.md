@@ -49,3 +49,6 @@ Note20（SM-N9860）上实际枚举并授权 1A86:7523；WCH 驱动成功打开 
 ## 2026-11-11 零字节原因与配置保存
 
 后续 Windows COM6、115200 查询 CONFIG 正常回复，VERSIONA 确认 UM982 R4.10Build7362；单次 GPGGA/GPRMC 均响应。当前口缺少周期 NMEA 输出是本次零字节现象的原因，之前仅监听为零不能据此认定硬件或驱动损坏。临时发送 GPGGA 1、GPRMC 1 后 6.5 秒收到各 7 条；用户明确要求保存后执行 SAVECONFIG，回复 OK。仍为未定位报文。手机换接与断电保持待复测。应用不自动发送模块配置命令。
+
+## 2026-11-12 CH340 current-port output raised to 20 Hz
+User requested higher output rate and connected board to PC. COM6 VID 1A86/PID 7523; VERSIONA confirmed UM982 R4.10Build7362. Issued GPGGA 0.05 and GPRMC 0.05 to current port; both replied OK. Received 100 GGA + 100 RMC in 5.012 seconds (5300 bytes, empty no-fix sentences). SAVECONFIG replied OK. Port closed. Valid-fix 20 Hz and phone compact-panel rendering still require antenna lock / phone reconnection verification. No baud or other UART settings changed. Evidence: evidence/um982-20261112-*.txt.

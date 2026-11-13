@@ -14,7 +14,6 @@ import androidx.compose.runtime.*
 import com.cmts.mobile.performance.PerformanceController
 import com.cmts.mobile.remote.RemoteBridge
 import java.io.File
-import java.io.BufferedWriter
 import org.json.JSONObject
 
 internal data class MountZero(
@@ -65,7 +64,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     private val thread = HandlerThread("cmts-recording")
     private lateinit var handler: Handler
     private val main = Handler(Looper.getMainLooper())
-    private var writer: BufferedWriter? = null
+    private var writer: SessionCsvWriter? = null
     private var folder: File? = null
     private var sequence = 0L
     private val rates = mutableMapOf<String, Rate>()
@@ -242,7 +241,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             CLIENT_REMOTE -> {
                 if (remoteHold) return
                 remoteHold = true
-                RecordingStateMachine.tryTransition(RecordingState.INITIALIZING)
+                if (!recordHold) RecordingStateMachine.tryTransition(RecordingState.INITIALIZING)
             }
             CLIENT_USB_GNSS -> {
                 usbHold = true
@@ -290,6 +289,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             else -> {
                 if (recordHold) stopRecordingSession()
                 recordHold = false
+                if (RecordingStateMachine.snapshot() == RecordingState.ERROR) return
             }
         }
         main.post { Live.status = statusText() }
@@ -395,7 +395,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         val usb = getSystemService(UsbManager::class.java)
         val device = GnssSourceSettings.findUsbGnss(usb)
         if (device == null) {
-            main.post { Live.gnssStatus = "未检测到 CH340 / CH344Q，请检查 UM982 的 USB 连接" }
+            main.post { Live.gnssStatus = "未检测到外接 GNSS" }
             return
         }
         if (!usb.hasPermission(device)) {
@@ -580,12 +580,15 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 .put("imuFrame", "Android device XYZ; acceleration includes gravity")
                 .toString(2),
         )
-        writer = File(folder, "samples.csv").bufferedWriter().apply {
-            write("sequence,source,sample_elapsed_ns,callback_elapsed_ns,utc_ms,quality,v1,v2,v3,v4,v5,v6,v7,v8\n")
-            flush()
+        val recordingFolder = folder!!
+        writer = SessionCsvWriter(
+            File(recordingFolder, "samples.csv").bufferedWriter(),
+            availableSpace = { filesDir.usableSpace },
+            onFailure = { error -> handler.post { if (folder == recordingFolder) fail(error) } },
+        )
+        check(RecordingStateMachine.recordingOpened(folder!!.name, System.currentTimeMillis())) {
+            "无法进入录制状态：${RecordingStateMachine.snapshot()}"
         }
-        RecordingStateMachine.markSession(folder!!.name, System.currentTimeMillis())
-        RecordingStateMachine.tryTransition(RecordingState.RECORDING)
         main.post { Live.running = true }
     }
 
@@ -598,7 +601,6 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             writer?.close()
             writer = null
             folder?.let { dir ->
-                File(dir, "closed.marker").writeText("${System.currentTimeMillis()}")
                 val metaFile = File(dir, "metadata.json")
                 if (metaFile.exists()) {
                     val meta = JSONObject(metaFile.readText())
@@ -621,8 +623,14 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                     meta.put("status", "closed")
                     metaFile.writeText(meta.toString(2))
                 }
+                // Publish completion only after every row and metadata have been saved.
+                File(dir, "closed.marker").writeText("${System.currentTimeMillis()}")
             }
-        } finally {
+        } catch (e: Exception) {
+            fail(e)
+            return
+        }
+        run {
             Live.activeSession = null
             folder = null
             RecordingStateMachine.markSession(null, null)
@@ -635,10 +643,26 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
 
     private fun fail(e: Exception) {
         RecordingStateMachine.force(RecordingState.ERROR, "${e.javaClass.simpleName}: ${e.message}")
+        val failedWriter = writer
+        val failedFolder = folder
+        writer = null
+        folder = null
+        recordHold = false
+        // Also clean up while the preview Activity remains bound to this service.
+        runCatching { failedWriter?.close() }
+        failedFolder?.let { dir -> runCatching {
+            File(dir, "closed.marker").delete()
+            val metaFile = File(dir, "metadata.json")
+            val meta = if (metaFile.exists()) JSONObject(metaFile.readText()) else JSONObject()
+            meta.put("status", "incomplete").put("error", "${e.javaClass.simpleName}: ${e.message}")
+            metaFile.writeText(meta.toString(2))
+        } }
+        Live.activeSession = null
+        RecordingStateMachine.markSession(null, null)
         main.post {
+            Live.running = false
             Live.status = "采集失败：${e.javaClass.simpleName}: ${e.message}"
         }
-        recordHold = false
         perfHold = false
         remoteHold = false
         usbHold = false
@@ -657,26 +681,20 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             attitudePipeline.observe(sample, Live.attitudeCalibrationRequest, Live.gnssSource == GnssSource.PHONE).forEach { accept(it) }
         }
         try {
-            if (recordHold && filesDir.usableSpace < 10 * 1024 * 1024) error("剩余空间不足 10 MiB")
             val labeled = if (Live.emulator) sample.copy(quality = "SIMULATED_${sample.quality}") else sample
             if (recordHold) {
-                writer?.apply {
-                    write(labeled.csv(++sequence, SystemClock.elapsedRealtimeNanos()))
-                    newLine()
-                    if (sequence % 50L == 0L) flush()
-                }
+                writer?.append(labeled, ++sequence, SystemClock.elapsedRealtimeNanos())
             }
             val rate = rates.getOrPut(sample.source) { Rate() }.update(sample.nanos)
             latestSamples[sample.source] = labeled
             if (remoteHold) {
-                Live.remoteSamples = latestSamples.toMap()
                 // Drive WS off IMU callbacks; GNSS only refreshes fields / map.
                 if (sample.source == "vehicle.accel" ||
                     sample.source == "phone.accel" ||
                     sample.source == "vehicle.gyro" ||
                     sample.source == "phone.gyro"
                 ) {
-                    RemoteBridge.onImuSample()
+                    RemoteBridge.onImuSample(latestSamples)
                 }
             }
             if (recordHold || previewVisible) LaunchCalibration.observe(sample,latestSamples)
@@ -694,6 +712,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             if (sample.source == "phone.gps" || now - lastUiPostNanos >= 50_000_000L) {
                 lastUiPostNanos = now
                 val sampleSnapshot = latestSamples.toMap()
+                if (remoteHold) Live.remoteSamples = sampleSnapshot
                 val rateSnapshot = latestRates.toMap()
                 main.post {
                     Live.samples = sampleSnapshot

@@ -5,9 +5,30 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.BufferedWriter
+import java.io.IOException
+import java.io.StringWriter
 
 class PerformanceRepositoryTest {
     @get:Rule val temp = TemporaryFolder()
+
+    @Test fun failedFlushStillClosesWriterAndCannotPublishResult() {
+        val repo = PerformanceRepository(temp.newFolder("failed-flush"))
+        val config = PerformanceConfig(PerformanceMode.ACCEL_0_TO_X, 0.0, 36.0)
+        val handle = repo.createAttempt(config)
+        repo.closeSamples(handle)
+        var closed = false
+        val failing = object : BufferedWriter(StringWriter()) {
+            override fun flush() { throw IOException("disk unavailable") }
+            override fun close() { closed = true }
+        }
+        val failedHandle = handle.copy(sampleWriter = failing, samplesAlreadyClosed = false)
+        val result = PerformanceEngine().recompute(config, listOf(sample(1, 1_000_000_000, 0.0)))
+        assertThrows(IOException::class.java) { repo.writeResult(failedHandle, result) }
+        assertTrue(closed)
+        assertFalse(File(handle.dir, "result-v1.json").exists())
+        repo.closeSamples(failedHandle) // repeated cleanup is safe
+    }
 
     private fun sample(seq: Long, t: Long, v: Double) = SpeedSample(
         sourceId = "phone.gps",

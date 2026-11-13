@@ -45,6 +45,11 @@ import androidx.compose.foundation.gestures.AnchoredDraggableState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.PagerState
@@ -67,6 +72,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.*
 import java.io.File
@@ -128,7 +134,7 @@ class MainActivity : ComponentActivity() {
  private var playing by mutableStateOf(false)
  private fun openReplay(session: File) = job {
   fileStatus = "正在读取历史记录…"
-  replay = withContext(Dispatchers.IO) { Replay.read(session) { percent -> runOnUiThread { fileStatus = "正在读取历史记录：$percent%" } } }; replayIndex = 0; playing = false; filesVisible = false
+  replay = withContext(Dispatchers.IO) { Replay.read(session, cacheDir) { percent -> runOnUiThread { fileStatus = "正在读取历史记录：$percent%" } } }; replayIndex = 0; playing = false; filesVisible = false
   "已打开历史记录"
  }
  private var csvSession: File? = null
@@ -253,7 +259,7 @@ class MainActivity : ComponentActivity() {
   val usb = getSystemService(UsbManager::class.java)
   val device = GnssSourceSettings.findUsbGnss(usb)
   if (device == null) {
-   Live.gnssStatus = "未检测到 CH340 / CH344Q，请检查 UM982 的 USB 连接"
+   Live.gnssStatus = "未检测到外接 GNSS"
    startForegroundService(CaptureService.acquireIntent(this, CaptureService.CLIENT_USB_GNSS))
    return
   }
@@ -287,8 +293,8 @@ class MainActivity : ComponentActivity() {
   else registerReceiver(usbPermissionReceiver, filter)
   RemoteBridge.start(this)
   setContent {
-   MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFD4AF37))) {
-    Surface(Modifier.fillMaxSize().background(Color(0xFF15171C))
+   CmtsTheme {
+    Surface(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
      .safeDrawingPadding().clipToBounds()) {
      if(filesVisible) {
       RecordsScreen(filesDir, busy, fileStatus, imported,
@@ -336,24 +342,30 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun PageDots(pagerState: PagerState, modifier: Modifier = Modifier, vertical: Boolean = false) {
  val scope = rememberCoroutineScope()
- val dots: @Composable () -> Unit = {
-  repeat(pagerState.pageCount) { index ->
+ val labels = listOf("仪表", "性能", "姿态", "曲线")
+ val item: @Composable (Int, Modifier) -> Unit = { index, itemModifier ->
+   val label = labels.getOrElse(index) { "页面 ${index + 1}" }
    val selected = pagerState.currentPage == index
-   Box(
-    Modifier
-     .clickable { scope.launch { pagerState.animateScrollToPage(index) } }
-     .padding(5.dp)
-     .size(if (selected) 9.dp else 7.dp)
-     .background(
-      color = if (selected) Color(0xFFD4AF37) else Color(0xFF5C5F69),
-      shape = CircleShape,
-     )
-     ,
-   )
-  }
+   Surface(
+    selected = selected,
+    onClick = { scope.launch { pagerState.animateScrollToPage(index) } },
+    shape = RoundedCornerShape(14.dp),
+    color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+    contentColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+    modifier = itemModifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+     .semantics { contentDescription = "${label}页"; stateDescription = if (selected) "当前页" else "未选中" },
+   ) {
+    Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+     Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+    }
+   }
  }
- if (vertical) Column(modifier.fillMaxHeight(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) { dots() }
- else Row(modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.Center) { dots() }
+ if (vertical) Column(modifier.fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+  repeat(pagerState.pageCount) { index -> item(index, Modifier) }
+ }
+ else Row(modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+  repeat(pagerState.pageCount) { index -> item(index, Modifier.weight(1f)) }
+ }
 }
 
 private enum class SidePanelAnchor { Hidden, Peek, Half, Full }
@@ -364,9 +376,9 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
   Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp),
   verticalArrangement = Arrangement.spacedBy(4.dp)
  ) {
-  Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2)
-  Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) { Text(if (Live.running) "停止并保存记录" else "开始记录") }
-  if (frame == null) GnssSourceSwitch(onSelect = onSelectGnssSource)
+  Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+  RecordingButton(onClick = onStart, modifier = Modifier.fillMaxWidth(), compact = true)
+  if (frame == null) GnssSourceSwitch(onSelect = onSelectGnssSource, compact = true)
   // Same now-source as the expanded Dashboard: read the clock on every recomposition (driven by
   // Live.samples, ~10 Hz UI post) so fresh samples are never older-than-now rejected. The 1 s
   // heartbeat only ages out stale readings when no new samples arrive.
@@ -386,8 +398,8 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
   Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
    PeekGauge("速度", display("spd", gps,3,3.6), "km/h", Modifier.fillMaxWidth().weight(1f))
    PeekGauge("高度", display("alt", gps,2), "m", Modifier.fillMaxWidth().weight(1f))
-   PeekGauge("大气压力", display("prs", samples["phone.pressure"],0), "mbar", Modifier.fillMaxWidth().weight(1f))
-   PeekGauge("卫星 可见 / 定位", "${display("sv", sat,0,digits=0)} / ${display("su", sat,1,digits=0)}", "颗", Modifier.fillMaxWidth().weight(1f))
+   PeekGauge("气压", display("prs", samples["phone.pressure"],0), "mbar", Modifier.fillMaxWidth().weight(1f))
+   PeekGauge("可见/定位", "${display("sv", sat,0,digits=0)}/${display("su", sat,1,digits=0)}", "颗", Modifier.fillMaxWidth().weight(1f))
   }
   Text(pullHint, color = Color(0xFFD4AF37), style = MaterialTheme.typography.labelSmall, maxLines = 1)
   Text(if(frame != null) "历史回放" else Live.status, style = MaterialTheme.typography.labelSmall, maxLines = 1)
@@ -397,16 +409,66 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
 
 @Composable
 private fun PeekGauge(title: String, value: String, unit: String, modifier: Modifier) {
- Card(modifier) {
-  Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp)) {
-   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-    Text(title, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-    Text(unit, style = MaterialTheme.typography.labelSmall, color = Color(0xFFD4AF37), maxLines = 1)
-   }
-   Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.CenterEnd) {
-    Text(value, style = MaterialTheme.typography.titleLarge, maxLines = 1, textAlign = TextAlign.End, overflow = TextOverflow.Ellipsis)
+ Card(modifier, shape = MaterialTheme.shapes.medium, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+  @Composable fun Number(numberModifier: Modifier) {
+   BoxWithConstraints(numberModifier, contentAlignment = Alignment.CenterEnd) {
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum", fontWeight = FontWeight.SemiBold, lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified)
+    val template = when (title) {
+     "速度" -> "-188.8"
+     "高度" -> "-8888.8"
+     "气压" -> "1888.8"
+     "可见/定位" -> "88/88"
+     else -> value
+    }
+    val numberSize = remember(template, value, constraints, style, measurer) {
+     var size = 28
+     while (size > 1) {
+      val sample = measurer.measure(template, style.copy(fontSize = size.sp), softWrap = false).size
+      val actual = measurer.measure(value, style.copy(fontSize = size.sp), softWrap = false).size
+      if (maxOf(sample.width, actual.width) <= constraints.maxWidth && maxOf(sample.height, actual.height) <= constraints.maxHeight) break
+      size--
+     }
+     size.sp
+    }
+    Text(value, style = style.copy(fontSize = numberSize), maxLines = 1, textAlign = TextAlign.End, softWrap = false)
    }
   }
+  BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 5.dp)) {
+   if (maxWidth >= 120.dp) {
+    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+     Column(Modifier.fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween) {
+      Text(title, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+      Text(unit, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+     }
+     Number(Modifier.weight(1f).fillMaxHeight())
+    }
+   } else {
+    Column(Modifier.fillMaxSize()) {
+     Text(title, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+     Number(Modifier.fillMaxWidth().weight(1f))
+     Text(unit, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+    }
+   }
+  }
+ }
+}
+
+@Composable
+private fun RecordingButton(onClick: () -> Unit, modifier: Modifier = Modifier, compact: Boolean = false, prominent: Boolean = false) {
+ Button(
+  onClick = onClick,
+  modifier = modifier.heightIn(min = if (prominent) 80.dp else if (compact) 52.dp else 48.dp),
+  shape = MaterialTheme.shapes.small,
+  colors = if (Live.running) ButtonDefaults.buttonColors(
+   containerColor = MaterialTheme.colorScheme.errorContainer,
+   contentColor = MaterialTheme.colorScheme.onErrorContainer,
+  ) else ButtonDefaults.buttonColors(),
+ ) {
+  Box(Modifier.size(10.dp).background(LocalContentColor.current, if (Live.running) RoundedCornerShape(2.dp) else CircleShape))
+  Spacer(Modifier.width(8.dp))
+  Text(if (Live.running) { if (compact) "停止保存" else "停止并保存记录" } else "开始记录", maxLines = 1,
+   style = MaterialTheme.typography.titleLarge)
  }
 }
 
@@ -465,7 +527,8 @@ private fun MainCaptureScreen(
   }
   onPlaying(false)
  }
- val replayTrack = remember(history, replayIndex) { history?.track?.takeWhile { it.nanos <= (frame?.nanos ?: 0) } }
+ val replayTrackCount = history?.track?.let { trackUpperBound(it, frame?.nanos ?: 0) } ?: 0
+ val replayTrack = remember(history, replayTrackCount) { history?.track?.let { TrackPrefix(it, replayTrackCount) } }
  var now by remember { mutableLongStateOf(SystemClock.elapsedRealtimeNanos()) }
  LaunchedEffect(Live.running) { while(Live.running) { now = SystemClock.elapsedRealtimeNanos(); delay(1000) } }
  val configuration = LocalConfiguration.current
@@ -500,16 +563,15 @@ private fun MainCaptureScreen(
   Live.running -> "记录中 · ${elapsedLabel(Live.startedNanos, now)}"
   else -> "准备记录"
  }
- val portraitPeekHeight = if (history == null) 248.dp else 288.dp
+ val portraitPeekHeight = if (history == null) 304.dp else 336.dp
  @Composable
  fun PortraitPanelBody(fullscreenAction: () -> Unit, expandLabel: String, onToggleExpand: () -> Unit, sheetExpanded: Boolean) {
-  // Always request full screen height so Expanded can cover the map. Peek only shows the
-  // top compact summary; HorizontalPager exists only when fully Expanded (no half-open swipe).
+  // The pager remains available in both peek and expanded states; only its content changes.
 
 
   val dashScroll = rememberScrollState()
   @Composable
-  fun SummaryGauges() {
+  fun SummaryGauges(includeMotion: Boolean = true) {
    // Same now-source as the expanded Dashboard (live clock per recomposition, 1 s heartbeat).
    var summaryHeartbeat by remember { mutableIntStateOf(0) }
    LaunchedEffect(Unit) { while(true) { delay(1000); summaryHeartbeat++ } }
@@ -525,9 +587,11 @@ private fun MainCaptureScreen(
     if (raw != "—") lastGood[key] = raw
     return lastGood[key] ?: raw
    }
-   Row(Modifier.fillMaxWidth().height(64.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-    PeekGauge("速度", summary("spd", "phone.gps",3,3.6), "km/h", Modifier.weight(1f).fillMaxHeight())
-    PeekGauge("高度", summary("alt", "phone.gps",2), "m", Modifier.weight(1f).fillMaxHeight())
+   Row(Modifier.fillMaxWidth().height(76.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    if (includeMotion) {
+     PeekGauge("速度", summary("spd", "phone.gps",3,3.6), "km/h", Modifier.weight(1f).fillMaxHeight())
+     PeekGauge("高度", summary("alt", "phone.gps",2), "m", Modifier.weight(1f).fillMaxHeight())
+    }
     PeekGauge("气压", summary("prs", "phone.pressure",0), "mbar", Modifier.weight(1f).fillMaxHeight())
     PeekGauge("可见/定位", "${summary("sv", "phone.satellites",0,digits=0)}/${summary("su", "phone.satellites",1,digits=0)}", "颗", Modifier.weight(1f).fillMaxHeight())
    }
@@ -535,7 +599,7 @@ private fun MainCaptureScreen(
 
   @Composable
   fun PeekOrDashChrome(includeFullDash: Boolean) {
-   Text(title, style = MaterialTheme.typography.titleMedium)
+   if (includeFullDash || history != null) Text(title, style = MaterialTheme.typography.titleMedium)
    if(history != null) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
      TextButton(onClick = { if(replayIndex == history.frames.lastIndex) onReplayIndex(0); onPlaying(!playing) }) { Text(if(playing) "暂停" else "播放") }
@@ -553,13 +617,22 @@ private fun MainCaptureScreen(
     }
     ReplaySeekBar(history, replayIndex, { onPlaying(false) }, onReplayIndex)
    }
-   if(history == null) Button(onClick = onToggleRecording, modifier = Modifier.fillMaxWidth()) { Text(if(Live.running) "停止并保存记录" else "开始记录") }
-   if(history == null) GnssSourceSwitch(onSelect = onSelectGnssSource)
-   SummaryGauges()
-   if (includeFullDash) TextButton(onClick = onToggleExpand, modifier = Modifier.fillMaxWidth()) { Text(expandLabel) }
+   if (history == null) {
+    if (!includeFullDash) {
+     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+      RecordingButton(onClick = onToggleRecording, modifier = Modifier.weight(1f), compact = true, prominent = true)
+      GnssSourceSwitch(onSelect = onSelectGnssSource, modifier = Modifier.weight(1f), compact = true, prominent = true)
+     }
+    } else {
+     RecordingButton(onClick = onToggleRecording, modifier = Modifier.fillMaxWidth())
+     GnssSourceSwitch(onSelect = onSelectGnssSource)
+    }
+   }
+   if (!includeFullDash) SummaryGauges()
    if (includeFullDash) {
     Text(if(history != null) "历史文件 · 非实时数据" else Live.status, style = MaterialTheme.typography.bodySmall)
     RemoteEndpointRow()
+    Dashboard(frame, landscape = false) { SummaryGauges(includeMotion = false) }
     TextButton(onClick = onUsbDebug) { Text("USB 设备调试") }
     val context = LocalContext.current
     val power = context.getSystemService(android.os.PowerManager::class.java)
@@ -567,7 +640,6 @@ private fun MainCaptureScreen(
      Text("省电模式已开启：三星手机可能在锁屏时暂停采样。长时间录制前请关闭省电模式。", color = MaterialTheme.colorScheme.error)
      TextButton(onClick = { context.startActivity(Intent(android.provider.Settings.ACTION_BATTERY_SAVER_SETTINGS)) }) { Text("打开省电设置") }
     }
-    Dashboard(frame, landscape = false)
     Spacer(Modifier.height(24.dp))
    }
   }
@@ -579,10 +651,18 @@ private fun MainCaptureScreen(
     .padding(horizontal = 16.dp),
    verticalArrangement = Arrangement.spacedBy(4.dp)
   ) {
+   Box(Modifier.fillMaxWidth().height(12.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.width(32.dp).height(4.dp).background(MaterialTheme.colorScheme.outlineVariant, CircleShape))
+   }
    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-    Text(listOf("Dashboard", "性能测试", "车辆姿态", "回放曲线")[panelPager.currentPage],
-     Modifier.weight(1f), color = Color(0xFFD4AF37), style = MaterialTheme.typography.titleMedium)
-    if (!sheetExpanded) TextButton(onClick = onToggleExpand) { Text("展开 ↑") }
+    Column(Modifier.weight(1f)) {
+     Text(listOf("实时仪表", "性能测试", "车辆姿态", "回放曲线")[panelPager.currentPage],
+      color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium)
+     if (!sheetExpanded && history == null) Text(title, style = MaterialTheme.typography.labelSmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+    }
+    if (!sheetExpanded && history == null && panelPager.currentPage == 2) AttitudeZeroAction()
+    TextButton(onClick = onToggleExpand) { Text(if (sheetExpanded) "收起 ↓" else "展开 ↑") }
     TextButton(onClick = fullscreenAction) { Text("全屏地图 ↓") }
    }
    val systemConfig = androidx.compose.ui.platform.LocalViewConfiguration.current
@@ -653,7 +733,7 @@ private fun MainCaptureScreen(
      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
       Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1)
       if (history == null && panelPager.currentPage == 2) AttitudeZeroAction()
-      if (history == null) TextButton(onClick = onToggleRecording) { Text(if(Live.running) "停止保存" else "开始记录") }
+      if (history == null) TextButton(onClick = onToggleRecording) { Text(if(Live.running) "停止保存" else "开始记录", style = MaterialTheme.typography.titleLarge) }
       if (inlineReplay) PlaybackActions()
       TextButton(onClick = onUsbDebug) { Text("USB") }
       TextButton(onClick = onCollapse) { Text(if (panelOnEnd) "收起 →" else "收起 ←") }
@@ -661,7 +741,6 @@ private fun MainCaptureScreen(
      if (history != null && !inlineReplay) Row { PlaybackActions() }
     }
    }
-   if (history == null) GnssSourceSwitch(onSelect = onSelectGnssSource)
    if (history != null) {
     ReplaySeekBar(history, replayIndex, { onPlaying(false) }, onReplayIndex)
    }
@@ -675,7 +754,11 @@ private fun MainCaptureScreen(
     key = { it },
    ) { page ->
     when (page) {
-     0 -> Box(Modifier.fillMaxSize()) { Dashboard(frame, landscape = true) }
+     0 -> Box(Modifier.fillMaxSize()) {
+      Dashboard(frame, landscape = true, landscapeSource = if (history == null) {
+       { GnssSourceSwitch(onSelect = onSelectGnssSource, compact = true) }
+      } else null)
+     }
      2 -> AttitudePane(frame, landscape = true)
       3 -> history?.let { ReplayCurves(it, replayIndex) { index -> onPlaying(false); onReplayIndex(index) } }
       else -> PerformancePane(
@@ -695,13 +778,14 @@ private fun MainCaptureScreen(
  Box(Modifier.fillMaxSize()) {
   if (!landscape) {
    BottomSheetScaffold(
-    modifier = Modifier.fillMaxSize().background(Color(0xFF15171C)), scaffoldState = sheet,
+    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface), scaffoldState = sheet,
     sheetDragHandle = null,
     sheetSwipeEnabled = true,
     containerColor = Color.Transparent,
-    sheetShape = androidx.compose.ui.graphics.RectangleShape,
+    sheetShape = if (sheet.bottomSheetState.currentValue == SheetValue.Expanded) androidx.compose.ui.graphics.RectangleShape
+     else RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
     sheetPeekHeight = portraitPeekHeight,
-    sheetContainerColor = Color(0xFF15171C), sheetContentColor = Color(0xFFE7E1E5),
+    sheetContainerColor = MaterialTheme.colorScheme.surface, sheetContentColor = MaterialTheme.colorScheme.onSurface,
     sheetContent = {
      PortraitPanelBody(
       fullscreenAction = { scope.launch { sheet.bottomSheetState.hide() } },
@@ -717,7 +801,7 @@ private fun MainCaptureScreen(
    ) {
     // Keep map out of status bar (matches landscape safeDrawingPadding). Expanded sheet
     // stops under status insets; without this strip the map peeks as a top seam.
-    Box(Modifier.fillMaxSize().background(Color(0xFF15171C))) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
      TrackMap(Modifier.layout { measurable, bounds ->
       val visibleHeight = runCatching { sheet.bottomSheetState.requireOffset().toInt() }
        .getOrDefault(bounds.maxHeight).coerceIn(1, bounds.maxHeight.coerceAtLeast(1))
@@ -787,8 +871,8 @@ private fun MainCaptureScreen(
       layout(bounds.maxWidth, bounds.maxHeight) { map.placeRelative(if (panelOnEndNow) 0 else covered, 0) }
      }, replayTrack, controlsOnStart = controlsOnStart)
      Surface(
-      color = Color(0xFF15171C),
-      contentColor = Color(0xFFE7E1E5),
+      color = MaterialTheme.colorScheme.surface,
+      contentColor = MaterialTheme.colorScheme.onSurface,
       modifier = Modifier
        .align(panelAlign)
        .fillMaxHeight()
@@ -807,7 +891,8 @@ private fun MainCaptureScreen(
          Modifier
           .fillMaxHeight()
           .width(22.dp)
-          .background(Color(0xFF2A2C33))
+          .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+          .semantics { contentDescription = "拖动展开或收起仪表面板" }
           .anchoredDraggable(dragState, reverseDirection = true, orientation = Orientation.Horizontal),
          contentAlignment = Alignment.Center
         ) {
@@ -841,7 +926,8 @@ private fun MainCaptureScreen(
          Modifier
           .fillMaxHeight()
           .width(22.dp)
-          .background(Color(0xFF2A2C33))
+          .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+          .semantics { contentDescription = "拖动展开或收起仪表面板" }
           .anchoredDraggable(dragState, reverseDirection = false, orientation = Orientation.Horizontal),
          contentAlignment = Alignment.Center
         ) {
@@ -852,7 +938,7 @@ private fun MainCaptureScreen(
      }
      if(hidden) {
       Box(Modifier.align(panelAlign).width(28.dp).height(80.dp)
-       .background(Color(0xDD15171C))
+       .background(MaterialTheme.colorScheme.surfaceContainerHigh)
        .anchoredDraggable(dragState, reverseDirection = panelOnEndNow, orientation = Orientation.Horizontal), contentAlignment = Alignment.Center) {
        Text(if(panelOnEndNow) "‹" else "›", color = Color(0xFFD4AF37))
       }

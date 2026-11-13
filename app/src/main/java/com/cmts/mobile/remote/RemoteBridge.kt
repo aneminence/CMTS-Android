@@ -129,12 +129,12 @@ object RemoteBridge {
      * Called from CaptureService sensor thread on IMU accept.
      * Throttled by subscribe.maxHz (default ~100). Does not wait for GNSS.
      */
-    fun onImuSample() {
+    fun onImuSample(samples: Map<String, com.cmts.mobile.Sample>) {
         if (!started.get()) return
         val ws = server ?: return
         if (!ws.hasAuthenticatedSubscriber()) return
         try {
-            maybePublishSample(ws)
+            maybePublishSample(ws, samples)
         } catch (e: Exception) {
             Log.w(TAG, "onImuSample: ${e.message}")
         }
@@ -175,10 +175,9 @@ object RemoteBridge {
         Log.i(TAG, "stream.reset reason=$reason enabled=$mountZeroEnabled")
     }
 
-    private fun maybePublishSample(ws: RemoteWsServer) {
+    private fun maybePublishSample(ws: RemoteWsServer, samples: Map<String, com.cmts.mobile.Sample>) {
         val defaultHz = store?.maxHz ?: RemoteSampleTiming.DEFAULT_MAX_HZ
         val hz = RemoteSampleTiming.clampHz(ws.maxSubscriberHz(defaultHz))
-        val samples = if (Live.remoteSamples.isNotEmpty()) Live.remoteSamples else Live.samples
         val gps = samples["phone.gps"]
         val accel = samples["vehicle.accel"] ?: samples["phone.accel"]
         val gyro = samples["vehicle.gyro"] ?: samples["phone.gyro"]
@@ -190,7 +189,10 @@ object RemoteBridge {
         }
         lastSampleEmitElapsed = nowElapsed
         lastMeasureNanosEmitted = measureNanos ?: lastMeasureNanosEmitted
-        publishCoreSample(ws, samples, gps, accel, gyro, measureNanos)
+        // This method runs on the capture thread; copy only after an actual emission is due.
+        val snapshot = samples.toMap()
+        Live.remoteSamples = snapshot
+        publishCoreSample(ws, snapshot, gps, accel, gyro, measureNanos)
     }
 
     private fun publishCoreSample(

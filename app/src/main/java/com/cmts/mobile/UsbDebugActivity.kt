@@ -29,7 +29,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -143,7 +143,7 @@ class UsbDebugActivity : ComponentActivity() {
         handler.post(tick)
         val gold = Color(UsbSerialPorts.GOLD)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            CmtsTheme {
                 Surface(Modifier.fillMaxSize()) {
                     Column(
                         Modifier.safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
@@ -226,6 +226,8 @@ class UsbDebugActivity : ComponentActivity() {
                                 val n = it.toInt() and 255
                                 if (n in 32..126 || n == 10 || n == 13 || n == 9) n.toChar() else '.'
                             }.joinToString(""),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
                         )
                     }
                 }

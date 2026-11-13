@@ -6,6 +6,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
@@ -14,16 +15,24 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cmts.mobile.Live
+import com.cmts.mobile.CmtsColors
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-private val Champagne = Color(0xFFD4AF37)
+private val Champagne: Color
+    @Composable get() = MaterialTheme.colorScheme.primary
 
 @Composable
 fun PerformanceScreen(
@@ -95,24 +104,16 @@ fun PerformancePane(
     ) || PerformanceController.holdCapture
 
     val settings: @Composable () -> Unit = {
-        if (!landscape) {
-        Text(
-            "性能测试",
-            style = if (embedded) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall,
-            color = Champagne,
-        )
-        Text(
-            "可多选测试段：一次跑完输出多项成绩。原始 GNSS 速度；插值不提高精度。",
-            style = MaterialTheme.typography.bodySmall,
-        )
-
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("测试段", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            Text("可多选 · km/h", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if (!landscape) Text("测试段（可多选）", color = Champagne, style = MaterialTheme.typography.labelMedium)
         // Row1: two accel · Row2: two brake — compact dual columns
         listOf(0 to 1, 2 to 3).forEach { (left, right) ->
             Row(
                 Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 listOf(left, right).forEach { index ->
                     val draft = drafts[index]
@@ -162,28 +163,32 @@ fun PerformancePane(
                     }
                 },
                 enabled = !active,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
             ) { Text("待命") }
             OutlinedButton(
                 onClick = { PerformanceController.cancel() },
                 enabled = active,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
             ) { Text("取消") }
-            TextButton(onClick = { showHistory = true }) { Text("详情") }
+            TextButton(onClick = { showHistory = true }, modifier = Modifier.heightIn(min = 48.dp)) { Text("历史详情") }
         }
 
         Text(
             if (PerformanceController.stayArmed) "连续待命：开 · 每轮结束自动待命下一轮，取消后关闭"
             else "连续待命：关 · 点「待命」开启",
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.bodySmall,
             color = if (PerformanceController.stayArmed) Champagne else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+        if (error != null) Surface(
+            color = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            shape = RoundedCornerShape(12.dp),
+        ) { Text(error!!, modifier = Modifier.fillMaxWidth().padding(12.dp), style = MaterialTheme.typography.bodySmall) }
     }
     val results: @Composable () -> Unit = {
-        if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall)
-
         StatusCard(snap, segmentSnaps)
+        if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     val scores: @Composable () -> Unit = {
         // Live table = current / just-finished run only; older runs live behind 详情 (history).
@@ -198,36 +203,44 @@ fun PerformancePane(
                 PerformanceController.holdCapture -> "性能保持中"
                 else -> "未采集"
             }} · phone.gps",
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
     if (landscape) {
         val pager = rememberPagerState { 2 }
         val scope = rememberCoroutineScope()
-        Column(modifier.fillMaxSize()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("成绩", "设置与状态").forEachIndexed { index, label ->
-                    Text(label, Modifier.clickable { scope.launch { pager.animateScrollToPage(index) } }.padding(4.dp),
-                        color = if (pager.currentPage == index) Champagne else MaterialTheme.colorScheme.onSurfaceVariant)
+                    FilterChip(
+                        selected = pager.currentPage == index,
+                        onClick = { scope.launch { pager.animateScrollToPage(index) } },
+                        label = { Text(label) },
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    )
                 }
             }
-            HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f)) { page ->
+            HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f).padding(bottom = 8.dp)) { page ->
                 Column(Modifier.fillMaxSize()) {
                     Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        if (page == 0) scores() else { settings(); actions(); results() }
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (page == 0) scores() else { results(); actions(); settings() }
                     }
 
                 }
             }
         }
     } else {
-        Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            settings()
-            actions()
+        Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (!embedded) Text("性能测试", style = MaterialTheme.typography.headlineSmall)
             results()
+            actions()
             scores()
+            settings()
+            Text("一次跑程可输出多个测试段。成绩使用原始 GNSS 速度；插值不提高测量精度。计分待命与普通录制独立。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -241,39 +254,45 @@ private fun DenseSpeedField(
     enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val textColor = if (enabled) Color(0xFFE7E1E5) else Color(0xFF8A8580)
-    val borderColor = if (enabled) Color(0xFF5C5B60) else Color(0xFF3A3940)
-    Row(
-        modifier
-            .height(40.dp)
-            .border(1.dp, borderColor, RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp),
-        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text(prefix, style = MaterialTheme.typography.labelMedium, color = Champagne)
+    val textColor = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+    val borderColor = if (enabled) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.outlineVariant
+    Surface(modifier = modifier.heightIn(min = 48.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(12.dp)) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                .border(1.dp, borderColor, RoundedCornerShape(12.dp)).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+        Text(prefix, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
             enabled = enabled,
             singleLine = true,
-            // ~40dp field: numeral fills box height; end-aligned like a speed readout.
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
             textStyle = TextStyle(
                 color = textColor,
-                fontSize = 22.sp,
-                lineHeight = 28.sp,
+                fontSize = 20.sp,
+                lineHeight = 26.sp,
+                fontFeatureSettings = "tnum",
+                fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.End,
             ),
-            modifier = Modifier.weight(1f).fillMaxHeight(),
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics {
+                contentDescription = if (prefix == "起") "起始速度，单位千米每小时" else "结束速度，单位千米每小时"
+            },
             decorationBox = { inner ->
                 Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.CenterEnd) {
                     if (value.isEmpty()) {
-                        Text("—", color = Color(0xFF8A8580), fontSize = 22.sp, lineHeight = 28.sp, textAlign = TextAlign.End)
+                        Text("—", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 20.sp, textAlign = TextAlign.End)
                     }
                     inner()
                 }
             },
         )
+        }
     }
 }
 
@@ -288,27 +307,19 @@ private fun SegmentRow(
     modifier: Modifier = Modifier,
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF202127)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        shape = RoundedCornerShape(16.dp),
         modifier = modifier,
     ) {
         val header: @Composable () -> Unit = {
-            Row(
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(0.dp),
-            ) {
-                Checkbox(
-                    checked = draft.selected,
-                    onCheckedChange = { onToggle() },
-                    enabled = enabled,
-                    modifier = Modifier.size(32.dp),
-                )
-                Text(
-                    draft.mode.shortLabel(),
-                    color = Champagne,
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
-                )
-            }
+            FilterChip(
+                selected = draft.selected,
+                onClick = onToggle,
+                enabled = enabled,
+                label = { Text(draft.mode.shortLabel(), style = MaterialTheme.typography.labelLarge, maxLines = 1) },
+                leadingIcon = if (draft.selected) { { Text("✓", style = MaterialTheme.typography.labelLarge) } } else null,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            )
         }
         val fields: @Composable () -> Unit = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -328,22 +339,32 @@ private fun SegmentRow(
                 )
             }
         }
-        if (compact) Row(Modifier.fillMaxWidth().padding(3.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Column(Modifier.fillMaxWidth().padding(if (compact) 8.dp else 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
             header()
-            Box(Modifier.weight(1f)) { fields() }
-        } else Column(Modifier.padding(6.dp)) { header(); fields() }
+            fields()
+        }
     }
 }
 
 @Composable
 private fun ResultsTable(attempts: List<AttemptSummary>, showTitle: Boolean = true, onOpen: (AttemptSummary) -> Unit) {
-    if (showTitle) Text("成绩表", color = Champagne, style = MaterialTheme.typography.titleSmall)
-    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF202127)), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    if (showTitle) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("成绩表", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        Text("${attempts.size} 项", style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
             ResultTableRow("测试时间", "段/类型", "距离", "时间", header = true)
-            HorizontalDivider(color = Color(0xFF3A3D46))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             if (attempts.isEmpty()) {
-                Text("暂无成绩", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+                Column(Modifier.fillMaxWidth().padding(vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("暂无成绩", style = MaterialTheme.typography.bodyMedium)
+                    Text("完成测试段后在这里查看时间与距离。", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             } else {
                 attempts.forEach { a ->
                     ResultTableRow(
@@ -354,7 +375,7 @@ private fun ResultsTable(attempts: List<AttemptSummary>, showTitle: Boolean = tr
                         header = false,
                         onClick = { onOpen(a) },
                     )
-                    HorizontalDivider(color = Color(0xFF2A2D36))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
                 }
             }
         }
@@ -371,15 +392,17 @@ private fun ResultTableRow(
     onClick: (() -> Unit)? = null,
 ) {
     val style = if (header) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall
-    val color = if (header) Champagne else Color(0xFFE7E1E5)
-    val mod = Modifier.fillMaxWidth().padding(vertical = 4.dp).then(
+    val color = if (header) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+    val mod = Modifier.fillMaxWidth().then(
         if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
-    )
-    Row(mod, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(time, style = style, color = color, modifier = Modifier.weight(1.0f), maxLines = 2)
-        Text(segment, style = style, color = color, modifier = Modifier.weight(1.1f), maxLines = 2)
-        Text(distance, style = style, color = color, modifier = Modifier.weight(0.8f), textAlign = TextAlign.End, maxLines = 1)
-        Text(duration, style = style, color = color, modifier = Modifier.weight(0.8f), textAlign = TextAlign.End, maxLines = 1)
+    ).heightIn(min = if (header) 28.dp else 48.dp).padding(vertical = 4.dp)
+    Row(mod, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(time, style = style, color = color, modifier = Modifier.weight(1.0f), textAlign = TextAlign.Center, maxLines = 2)
+        Text(segment, style = style, color = color, modifier = Modifier.weight(1.1f), textAlign = TextAlign.Center, maxLines = 2)
+        Text(distance, style = style.copy(fontFeatureSettings = "tnum", fontWeight = if (header) FontWeight.Medium else FontWeight.SemiBold),
+            color = color, modifier = Modifier.weight(0.8f), textAlign = TextAlign.Center, maxLines = 2)
+        Text(duration, style = style.copy(fontFeatureSettings = "tnum", fontWeight = if (header) FontWeight.Medium else FontWeight.SemiBold),
+            color = if (header) color else Champagne, modifier = Modifier.weight(0.8f), textAlign = TextAlign.Center, maxLines = 2)
     }
 }
 
@@ -422,26 +445,61 @@ private fun StatusCard(snap: EngineSnapshot, segments: List<Pair<PerformanceConf
     }
     var expanded by remember { mutableStateOf(false) }
     val indicator = if (segments.isEmpty()) null else "${segments.size} 段 ${if (expanded) "▴" else "▾"}"
-    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF202127)), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.clickable(enabled = segments.isNotEmpty()) { expanded = !expanded }.padding(horizontal = 8.dp, vertical = 4.dp)) {
-            Text(listOfNotNull(phase, speed, hz, warning, indicator).joinToString("  ·  "), color = Champagne, style = MaterialTheme.typography.labelMedium)
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().clickable(enabled = segments.isNotEmpty()) { expanded = !expanded }
+            .heightIn(min = 64.dp).padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(phase, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (warning != null) QualityBadge(quality)
+                else Text("性能测试", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(listOfNotNull(speed, hz, indicator).joinToString("  ·  ").ifEmpty { "等待速度样本" },
+                color = Champagne, style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"))
             if (expanded) segments.forEach { (cfg, s) ->
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Text("${trimNum(cfg.startSpeedKmh)}→${trimNum(cfg.endSpeedKmh)} · ${s.phase.name}" +
-                    if (s.quality == QualityTier.PASS) "" else " · ${s.quality.name}", style = MaterialTheme.typography.labelSmall)
+                    if (s.quality == QualityTier.PASS) "" else " · ${s.quality.name}", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
 }
+
+@Composable
+private fun QualityBadge(quality: QualityTier) {
+    val (container, content) = when (quality) {
+        QualityTier.PASS -> CmtsColors.SuccessContainer to CmtsColors.Success
+        QualityTier.WARN -> CmtsColors.WarningContainer to CmtsColors.Warning
+        QualityTier.FAIL -> MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+    }
+    Surface(color = container, contentColor = content, shape = RoundedCornerShape(50)) {
+        Text(when (quality) {
+            QualityTier.PASS -> "✓ PASS · 通过"
+            QualityTier.WARN -> "! WARN · 提醒"
+            QualityTier.FAIL -> "× FAIL · 异常"
+        }, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+    }
+}
+
 @Composable
 private fun ResultCard(result: PerformanceResult?) {
     if (result == null) return
-    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF202127)), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("本组成绩", color = Champagne, style = MaterialTheme.typography.titleSmall)
-            Text("阶段 ${result.phase.name} · ${result.quality.name}")
-            result.durationSeconds()?.let { Text("时间 ${"%.2f".format(it)} s") }
-            result.distanceMeters?.let { Text("距离 ${"%.2f".format(it)} m") }
-            Text("算法 ${result.algorithmVersion}", style = MaterialTheme.typography.labelSmall)
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("本组成绩", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                QualityBadge(result.quality)
+            }
+            Text("阶段 ${result.phase.name}", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            result.durationSeconds()?.let { Text("时间  ${"%.2f".format(it)} s", color = Champagne,
+                style = MaterialTheme.typography.headlineLarge.copy(fontFeatureSettings = "tnum")) }
+            result.distanceMeters?.let { Text("距离 ${"%.2f".format(it)} m",
+                style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum")) }
+            Text("算法 ${result.algorithmVersion}", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -458,24 +516,24 @@ private fun PerformanceHistoryPane(
 ) {
     val attempts = remember(revision) { PerformanceController.listAttempts(filesDir) }
     Column(
-        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         TextButton(onClick = onBack) { Text("← 返回测试") }
         if (detail == null) {
-            Text("性能历史", style = MaterialTheme.typography.titleMedium, color = Champagne)
+            Text("性能历史", style = MaterialTheme.typography.titleLarge)
             ResultsTable(attempts = attempts, onOpen = onDetail)
         } else {
-            Text("尝试详情", style = MaterialTheme.typography.titleMedium, color = Champagne)
-            Text(detail.id, style = MaterialTheme.typography.labelSmall)
-            Text(formatSegment(detail))
+            Text("尝试详情", style = MaterialTheme.typography.titleLarge)
+            Text(detail.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(formatSegment(detail), style = MaterialTheme.typography.titleMedium, color = Champagne)
             val repo = PerformanceController.ensureRepo(filesDir)
             val latest = remember(detail.id, revision) { repo.loadLatestResult(detail.dir) }
             latest?.let { (ver, result) ->
-                Text("最新 result-v$ver")
+                Text("最新 result-v$ver", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 ResultCard(result)
             }
-            Button(onClick = { onRecompute(detail) }, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = { onRecompute(detail) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text("用原始速度样本重算（新版本）")
             }
         }
@@ -488,14 +546,21 @@ private fun PerformanceHistoryPane(
 internal fun CompactPerformanceResults(filesDir: File) {
  // Current / just-finished run only (same as the live 成绩 table); history stays behind 详情.
  val rows = PerformanceController.sessionResults
- Column(Modifier.fillMaxSize().padding(6.dp)) {
-  Text("性能成绩", color = Champagne)
-  Column(Modifier.verticalScroll(rememberScrollState())) {
-   if (rows.isEmpty()) Text("暂无成绩")
+ Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+   Text("性能成绩", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+   Text("${rows.size} 项", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+  }
+  Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+   if (rows.isEmpty()) Text("暂无成绩", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
    rows.forEach {
-    Text(formatSegment(it), style = MaterialTheme.typography.labelSmall)
-    Text("${formatDuration(it)} · ${formatDistance(it)}")
-    HorizontalDivider()
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+      Text(formatSegment(it), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      Text("${formatDuration(it)} · ${formatDistance(it)}", color = Champagne,
+       style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"))
+     }
+    }
    }
   }
  }
