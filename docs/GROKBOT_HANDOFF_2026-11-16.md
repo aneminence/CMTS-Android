@@ -2,7 +2,7 @@
 
 ## 当前交付
 
-工程：`D:\CMTS\android`，分支 `master`，远程 `aneminence/CMTS-Android`。版本仍为 0.1.5 / versionCode 6，没有升级版本号。仅修改 Android。
+工程：`D:\CMTS\android`，分支 `master`，远程 `aneminence/CMTS-Android`。发布版本更新为 0.1.6 / versionCode 7，延续 debug 签名 APK 发布方式。仅修改 Android。
 
 - 竖屏收起面板：开始/暂停占左半区，右半区停止与 GNSS 等分。用嵌套等权 Row 计入间隔，与下方四张摘要卡片列边缘对齐。
 - 横屏窄栏：开始/暂停整行，下方停止与 GNSS 左右并排。

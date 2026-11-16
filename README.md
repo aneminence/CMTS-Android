@@ -1,7 +1,7 @@
 # CMTS Android
 
 **Chassis Master Test Suite — 手机端 Standalone MVP**
-当前版本：**0.1.5**（`versionCode` 6）· 包名 `com.cmts.mobile` · 显示名 CMTS
+当前版本：**0.1.6**（`versionCode` 7）· 包名 `com.cmts.mobile` · 显示名 CMTS
 
 手机端 GNSS + IMU 采集、Compose 地图仪表、会话导出、姿态/坡度、回放曲线，以及独立的 **Performance Test（车辆性能测试）**（含回放离线计分）模块。定位源可在手机 GNSS 与外接 GNSS 之间切换（当前支持 UM982），并可通过局域网连接 Windows 客户端。
 Windows 客户端（`Chassis Master Test Suite`）为本仓库只读参考，**不在此仓库修改**。
@@ -23,7 +23,7 @@ CMTS Android 面向底盘与动力学路测场景：在真机上以前台服务�
 
 ---
 
-## 主要功能 / Features（0.1.5）
+## 主要功能 / Features（0.1.6）
 
 ### 地图与界面
 
@@ -199,7 +199,7 @@ $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 
 ## 功能更新记录 / Changelog
 
-### 2026-11-16 — 录制控制与仪表布局（版本号仍为 0.1.5）
+### 0.1.6 — 2026-11-16
 
 - 普通录制新增暂停/继续，保留当前会话；开始/暂停按钮在录制中为绿色，未开始或暂停为黄色。
 - 红色停止按钮须持续长按 2 秒，扇形进度覆盖整个按钮并沿圆角裁切；提前松手取消。
