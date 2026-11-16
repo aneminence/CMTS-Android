@@ -39,11 +39,11 @@ internal fun displayVehicleAxes(zero: MountZero, samples: Map<String, Sample>): 
 }
 
 @Composable
-internal fun Dashboard(replay: ReplayFrame? = null, landscape: Boolean = false, landscapeSource: (@Composable () -> Unit)? = null, supplementaryReadings: @Composable () -> Unit = {}) {
+internal fun Dashboard(replay: ReplayFrame? = null, landscape: Boolean = false, landscapeSource: (@Composable () -> Unit)? = null) {
  if (landscape) {
   DashboardLandscape(replay, landscapeSource)
  } else {
-  DashboardPortrait(replay, supplementaryReadings)
+  DashboardPortrait(replay)
   Spacer(Modifier.height(12.dp))
   EstimatePanel(replay)
  }
@@ -113,15 +113,19 @@ private fun EstimateDetails(replay: ReplayFrame?) {
 }
 
 @Composable
-private fun DashboardPortrait(replay: ReplayFrame?, supplementaryReadings: @Composable () -> Unit) {
+private fun DashboardPortrait(replay: ReplayFrame?) {
  val d = rememberDashboardModel(replay)
  Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
   SpeedModule(d, Modifier.fillMaxWidth())
   Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-   Gauge("航向", d.heading, "°", Modifier.weight(1f))
-   Gauge("水平精度", d.hAcc, "m", Modifier.weight(1f))
+   Gauge("高度", d.alt, "m", Modifier.weight(1f))
+   Gauge("气压", d.pressure, "mbar", Modifier.weight(1f))
   }
-  supplementaryReadings()
+  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+   Gauge("水平精度", d.hAcc, "m", Modifier.weight(1f))
+   Gauge("垂直精度", d.vAcc, "m", Modifier.weight(1f))
+   Gauge("可见/定位", d.satellites, "颗", Modifier.weight(1f))
+  }
   AxisGroup("线加速度", "车辆坐标 · 已去重力", listOf("X · 向前", "Y · 向左", "Z · 向上"), d.accel, "m/s²")
   AxisGroup("角速度", if (d.zeroEnabled) "车辆坐标 · 已归零" else "车辆坐标", listOf("X 轴", "Y 轴", "Z 轴"), d.gyro, "°/s")
   AxisGroup("系统姿态", if (d.zeroEnabled) "相对安装 · 已归零" else "车辆坐标 · 未归零",
@@ -185,7 +189,7 @@ private fun DashboardLandscape(replay: ReplayFrame?, source: (@Composable () -> 
   axis(if (d.zeroEnabled) "姿态·已归零" else "姿态", listOf("横滚 X", "俯仰 Y", "偏航 Z"), d.attitude, "°", "垂直精度", d.vAcc, "m")
   Column(Modifier.width(260.dp).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
    Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) { EstimatePanel(replay, landscape = true) }
-   GnssCard(d, landscape = true)
+   GnssCard(d)
    if (replay == null) ZeroButtons(d)
   }
  }
@@ -378,13 +382,13 @@ private fun ZeroButtons(d: DashboardModel) {
 
 }
 @Composable
-private fun GnssCard(d: DashboardModel, landscape: Boolean = false) {
+private fun GnssCard(d: DashboardModel) {
  Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
   Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
    Text("GNSS / WGS84", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall)
    Text("纬度  ${d.lat} °", style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"))
    Text("经度  ${d.lon} °", style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"))
-   Text(if (landscape) "航向  ${d.heading} °" else "高度  ${d.alt} m    垂直精度  ${d.vAcc} m", style = MaterialTheme.typography.bodySmall)
+   Text("航向  ${d.heading} °", style = MaterialTheme.typography.bodySmall)
    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
    for ((label, rate, fresh) in d.rates) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

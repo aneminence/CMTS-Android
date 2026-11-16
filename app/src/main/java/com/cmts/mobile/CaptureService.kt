@@ -32,6 +32,7 @@ object Live {
     /** True while a normal recording session is writing samples.csv. */
     var activeSession by mutableStateOf<File?>(null)
     var running by mutableStateOf(false)
+    var recordingPaused by mutableStateOf(false)
     var status by mutableStateOf("未采集")
     var samples by mutableStateOf(mapOf<String, Sample>())
     /**
@@ -73,6 +74,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     private var lastUiPostNanos = 0L
     private var listenersUp = false
     private var recordHold = false
+    private var recordingPaused = false
     private var perfHold = false
     private var remoteHold = false
     /** True after PerformanceController.holdCapture observed while CLIENT_PERF held. */
@@ -200,6 +202,13 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         val action = intent?.getStringExtra(EXTRA_ACTION) ?: ACTION_ACQUIRE
         val client = intent?.getStringExtra(EXTRA_CLIENT) ?: CLIENT_RECORD
         when (action) {
+            "toggle_pause" -> handler.post {
+                if (recordHold) {
+                    recordingPaused = !recordingPaused
+                    val paused = recordingPaused
+                    main.post { Live.recordingPaused = paused; Live.status = if (paused) "记录已暂停" else "记录中" }
+                }
+            }
             ACTION_RELEASE -> handler.post { releaseClient(client) }
             else -> handler.post { acquireClient(client) }
         }
@@ -589,10 +598,12 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         check(RecordingStateMachine.recordingOpened(folder!!.name, System.currentTimeMillis())) {
             "无法进入录制状态：${RecordingStateMachine.snapshot()}"
         }
-        main.post { Live.running = true }
+        recordingPaused = false
+        main.post { Live.running = true; Live.recordingPaused = false }
     }
 
     private fun stopRecordingSession() {
+        recordingPaused = false
         LaunchCalibration.cancel()
         RecordingStateMachine.tryTransition(RecordingState.STOPPING)
         RecordingStateMachine.tryTransition(RecordingState.SAVING)
@@ -636,7 +647,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             RecordingStateMachine.markSession(null, null)
             val next = if (perfHold || remoteHold || previewVisible || usbHold) RecordingState.READY else RecordingState.IDLE
             RecordingStateMachine.tryTransition(next)
-            main.post { Live.running = false }
+            main.post { Live.running = false; Live.recordingPaused = false }
             if (!perfHold) PerformanceController.bindCaptureSession(null)
         }
     }
@@ -660,7 +671,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         Live.activeSession = null
         RecordingStateMachine.markSession(null, null)
         main.post {
-            Live.running = false
+            Live.running = false; Live.recordingPaused = false
             Live.status = "采集失败：${e.javaClass.simpleName}: ${e.message}"
         }
         perfHold = false
@@ -682,7 +693,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         }
         try {
             val labeled = if (Live.emulator) sample.copy(quality = "SIMULATED_${sample.quality}") else sample
-            if (recordHold) {
+            if (recordHold && !recordingPaused) {
                 writer?.append(labeled, ++sequence, SystemClock.elapsedRealtimeNanos())
             }
             val rate = rates.getOrPut(sample.source) { Rate() }.update(sample.nanos)
@@ -828,7 +839,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             tearDownListeners()
             thread.quitSafely()
         }
-        Live.running = false
+        Live.running = false; Live.recordingPaused = false
         Live.serviceAlive = false
         RecordingStateMachine.force(RecordingState.IDLE)
         super.onDestroy()

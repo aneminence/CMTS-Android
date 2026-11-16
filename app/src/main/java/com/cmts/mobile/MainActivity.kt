@@ -1,5 +1,6 @@
 package com.cmts.mobile
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.progressSemantics
@@ -223,10 +224,7 @@ class MainActivity : ComponentActivity() {
  }
  private fun toggleRecording() {
   if (Live.running || RecordingStateMachine.snapshot() == RecordingState.RECORDING) {
-   if (PerformanceController.holdCapture) {
-    Live.status = "停止记录不会中断进行中的性能测试；仅结束普通录制会话"
-   }
-   RecordingCommands.stop(this)
+   startService(Intent(this, CaptureService::class.java).putExtra(CaptureService.EXTRA_ACTION, "toggle_pause"))
   } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
    beginRecording()
   } else {
@@ -321,6 +319,7 @@ class MainActivity : ComponentActivity() {
        onPlaying = { playing = it },
        onExitReplay = { playing = false; replay = null },
        onToggleRecording = { toggleRecording() },
+       onStopRecording = { RecordingCommands.stop(this) },
        onOpenFiles = { filesVisible = true },
        onUsbDebug = { startActivity(Intent(this@MainActivity, UsbDebugActivity::class.java)) },
        onSelectGnssSource = { selectGnssSource(it) },
@@ -371,14 +370,17 @@ private fun PageDots(pagerState: PagerState, modifier: Modifier = Modifier, vert
 private enum class SidePanelAnchor { Hidden, Peek, Half, Full }
 
 @Composable
-private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: String, frame: ReplayFrame? = null, onSelectGnssSource: (GnssSource) -> Unit = {}) {
+private fun LandscapePeekChrome(title: String, onStart: () -> Unit, onStop: () -> Unit, pullHint: String, frame: ReplayFrame? = null, onSelectGnssSource: (GnssSource) -> Unit = {}) {
  Column(
   Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp),
-  verticalArrangement = Arrangement.spacedBy(4.dp)
+  verticalArrangement = Arrangement.spacedBy(8.dp)
  ) {
   Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
   RecordingButton(onClick = onStart, modifier = Modifier.fillMaxWidth(), compact = true)
-  if (frame == null) GnssSourceSwitch(onSelect = onSelectGnssSource, compact = true)
+  if (frame == null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+   StopRecordingButton(onStop, Modifier.weight(1f))
+   GnssSourceSwitch(onSelect = onSelectGnssSource, modifier = Modifier.weight(1f), compact = true)
+  }
   // Same now-source as the expanded Dashboard: read the clock on every recomposition (driven by
   // Live.samples, ~10 Hz UI post) so fresh samples are never older-than-now rejected. The 1 s
   // heartbeat only ages out stale readings when no new samples arrive.
@@ -395,7 +397,7 @@ private fun LandscapePeekChrome(title: String, onStart: () -> Unit, pullHint: St
    if (raw != "—") lastGood[key] = raw
    return lastGood[key] ?: raw
   }
-  Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+  Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
    PeekGauge("速度", display("spd", gps,3,3.6), "km/h", Modifier.fillMaxWidth().weight(1f))
    PeekGauge("高度", display("alt", gps,2), "m", Modifier.fillMaxWidth().weight(1f))
    PeekGauge("气压", display("prs", samples["phone.pressure"],0), "mbar", Modifier.fillMaxWidth().weight(1f))
@@ -459,16 +461,62 @@ private fun RecordingButton(onClick: () -> Unit, modifier: Modifier = Modifier, 
  Button(
   onClick = onClick,
   modifier = modifier.heightIn(min = if (prominent) 80.dp else if (compact) 52.dp else 48.dp),
-  shape = MaterialTheme.shapes.small,
-  colors = if (Live.running) ButtonDefaults.buttonColors(
-   containerColor = MaterialTheme.colorScheme.errorContainer,
-   contentColor = MaterialTheme.colorScheme.onErrorContainer,
+  shape = MaterialTheme.shapes.medium,
+  colors = if (Live.running && !Live.recordingPaused) ButtonDefaults.buttonColors(
+   containerColor = Color(0xFF2E7D32), contentColor = Color.White,
   ) else ButtonDefaults.buttonColors(),
+  contentPadding = PaddingValues(horizontal = 8.dp),
  ) {
-  Box(Modifier.size(10.dp).background(LocalContentColor.current, if (Live.running) RoundedCornerShape(2.dp) else CircleShape))
-  Spacer(Modifier.width(8.dp))
-  Text(if (Live.running) { if (compact) "停止保存" else "停止并保存记录" } else "开始记录", maxLines = 1,
-   style = MaterialTheme.typography.titleLarge)
+  Text(if (Live.running) { if (Live.recordingPaused) "继续记录" else "暂停记录" } else "开始记录", maxLines = 1,
+   style = if (prominent) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge)
+
+ }
+}
+
+@Composable
+private fun StopRecordingButton(onClick: () -> Unit, modifier: Modifier = Modifier, prominent: Boolean = false) {
+ val enabled = Live.running
+ val stop by rememberUpdatedState(onClick)
+ var progress by remember { mutableFloatStateOf(0f) }
+ Surface(
+  modifier = modifier.height(if (prominent) 80.dp else 52.dp)
+   .semantics { contentDescription = "长按2秒停止记录"; stateDescription = if (enabled) "按住直到圆圈填满，松开取消" else "未录制" }
+   .pointerInput(enabled) {
+    if (enabled) detectTapGestures(onPress = {
+     coroutineScope {
+      val timer = launch {
+       try {
+        val start = SystemClock.elapsedRealtime()
+        while (true) {
+         progress = ((SystemClock.elapsedRealtime() - start) / 2000f).coerceIn(0f, 1f)
+         if (progress >= 1f) { stop(); break }
+         delay(16)
+        }
+       } finally { progress = 0f }
+      }
+      try { tryAwaitRelease() } finally { timer.cancelAndJoin() }
+     }
+    })
+   },
+  shape = MaterialTheme.shapes.medium,
+  color = if (enabled) Color(0xFFC62828) else Color(0xFF742727),
+  contentColor = if (enabled) Color.White else Color(0xFFDCBABA),
+ ) {
+  Box(contentAlignment = Alignment.Center) {
+   if (progress > 0f) Canvas(Modifier.matchParentSize()) {
+    // Circumscribed circle lets the rotating sector reach every corner of the button.
+    val radius = kotlin.math.hypot(size.width, size.height) / 2f
+    drawArc(
+     Color.White.copy(alpha = 0.35f), -90f, 360f * progress, useCenter = true,
+     topLeft = Offset(size.width / 2f - radius, size.height / 2f - radius),
+     size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f),
+    )
+   }
+   Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Text("停止", style = MaterialTheme.typography.titleMedium, maxLines = 1)
+    Text("长按2秒", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+   }
+  }
  }
 }
 
@@ -500,6 +548,7 @@ private fun MainCaptureScreen(
  onPlaying: (Boolean) -> Unit,
  onExitReplay: () -> Unit,
  onToggleRecording: () -> Unit,
+ onStopRecording: () -> Unit,
  onOpenFiles: () -> Unit,
  onUsbDebug: () -> Unit,
  onSelectGnssSource: (GnssSource) -> Unit,
@@ -587,7 +636,7 @@ private fun MainCaptureScreen(
     if (raw != "—") lastGood[key] = raw
     return lastGood[key] ?: raw
    }
-   Row(Modifier.fillMaxWidth().height(76.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+   Row(Modifier.fillMaxWidth().height(76.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     if (includeMotion) {
      PeekGauge("速度", summary("spd", "phone.gps",3,3.6), "km/h", Modifier.weight(1f).fillMaxHeight())
      PeekGauge("高度", summary("alt", "phone.gps",2), "m", Modifier.weight(1f).fillMaxHeight())
@@ -619,20 +668,26 @@ private fun MainCaptureScreen(
    }
    if (history == null) {
     if (!includeFullDash) {
-     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
       RecordingButton(onClick = onToggleRecording, modifier = Modifier.weight(1f), compact = true, prominent = true)
-      GnssSourceSwitch(onSelect = onSelectGnssSource, modifier = Modifier.weight(1f), compact = true, prominent = true)
+      Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+       StopRecordingButton(onStopRecording, Modifier.weight(1f), prominent = true)
+       GnssSourceSwitch(onSelect = onSelectGnssSource, modifier = Modifier.weight(1f), compact = true, prominent = true)
+      }
      }
     } else {
      RecordingButton(onClick = onToggleRecording, modifier = Modifier.fillMaxWidth())
-     GnssSourceSwitch(onSelect = onSelectGnssSource)
+     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      StopRecordingButton(onStopRecording, Modifier.weight(1f))
+      GnssSourceSwitch(onSelect = onSelectGnssSource, modifier = Modifier.weight(1f), compact = true)
+     }
     }
    }
    if (!includeFullDash) SummaryGauges()
    if (includeFullDash) {
     Text(if(history != null) "历史文件 · 非实时数据" else Live.status, style = MaterialTheme.typography.bodySmall)
     RemoteEndpointRow()
-    Dashboard(frame, landscape = false) { SummaryGauges(includeMotion = false) }
+    Dashboard(frame, landscape = false)
     TextButton(onClick = onUsbDebug) { Text("USB 设备调试") }
     val context = LocalContext.current
     val power = context.getSystemService(android.os.PowerManager::class.java)
@@ -733,7 +788,7 @@ private fun MainCaptureScreen(
      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
       Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1)
       if (history == null && panelPager.currentPage == 2) AttitudeZeroAction()
-      if (history == null) TextButton(onClick = onToggleRecording) { Text(if(Live.running) "停止保存" else "开始记录", style = MaterialTheme.typography.titleLarge) }
+      if (history == null) TextButton(onClick = onToggleRecording) { Text(if(Live.running) { if (Live.recordingPaused) "继续记录" else "暂停记录" } else "开始记录", style = MaterialTheme.typography.titleLarge) }
       if (inlineReplay) PlaybackActions()
       TextButton(onClick = onUsbDebug) { Text("USB") }
       TextButton(onClick = onCollapse) { Text(if (panelOnEnd) "收起 →" else "收起 ←") }
@@ -909,6 +964,7 @@ private fun MainCaptureScreen(
            else -> LandscapePeekChrome(
           title = title, frame = frame,
           onStart = onToggleRecording,
+          onStop = onStopRecording,
           pullHint = if (panelOnEndNow) "上下翻页 · 侧拉展开 ←" else "上下翻页 · 侧拉展开 →",
           onSelectGnssSource = onSelectGnssSource,
          )

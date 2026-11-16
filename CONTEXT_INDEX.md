@@ -2,6 +2,8 @@
 
 Single index. Prefer the handoff over older docs; do not fork a second encyclopedia.
 
+最新界面与录制控制交接：[2026-11-16 开发进度](docs/GROKBOT_HANDOFF_2026-11-16.md)。包含 2 秒长按停止、暂停语义、S23 安装状态与待验收项。
+
 ## Canonical status
 | Doc | Role |
 |-----|------|

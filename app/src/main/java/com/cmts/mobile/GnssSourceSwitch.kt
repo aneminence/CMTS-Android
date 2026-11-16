@@ -22,7 +22,7 @@ fun GnssSourceSwitch(onSelect: (GnssSource) -> Unit, modifier: Modifier = Modifi
                 onClick = { expanded = true },
                 modifier = Modifier.fillMaxWidth().heightIn(min = if (prominent) 80.dp else if (compact) 52.dp else 48.dp)
                     .semantics { contentDescription = "选择定位源${if (status.isNotBlank()) "，$status" else ""}" },
-                shape = MaterialTheme.shapes.small,
+                shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
             ) {
                 BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = if (prominent) 80.dp else if (compact) 52.dp else 48.dp), contentAlignment = Alignment.Center) {
