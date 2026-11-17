@@ -2,6 +2,15 @@
 
 按时间倒序。历史条目摘自已合入 `master` 的发布说明与交接，验证结果沿用当时记录，本轮未重新跑构建或实机验收。
 
+## 2026-11-17 — 0.1.7 / versionCode 8
+
+- 执行来源：本版本合入 `master`，详见 `README.md` 与 `docs/GROKBOT_HANDOFF_2026-11-17.md`
+- 功能名称：记录列表增强、仪表行程参数、成绩累计、GG 图、地图跟随/缩放与短轨迹丢弃
+- 修改内容：记录列表可打开外部 VBO/KML（仅预览），显示时长与行驶里程，可重命名，导出文件名与显示名一致；列表立即展示，时长与里程后台补算。里程按定位速度对时间积分（阈值 0.5 km/h，间隔超过 5 s 跳过），录制结束或旧文件首次打开时写入 `metadata.json`，之后只读缓存。停止录制时若行驶里程为 0，删除该会话并提示「轨迹过短，未记录」。实时仪表顶部一行参考文字显示录制时间、行驶时间（不含停车）和行驶里程。同一次录制中停车再开不再清空成绩；加速成绩同时显示距离，加速时间与制动距离用香槟金强调。姿态页增加去重力 GG 图（拖影 5 s，量程 ±1 g，红色轨迹随时间变淡），并调整俯仰/侧倾与 GG 的横竖屏布局。谷歌地图最大缩放提到 21；锁定跟随时不再把缩放打回 16。应用内显示软件版本。
+- 涉及文件：`TripMetrics.kt`、`SessionCatalog.kt`、`GgPlot.kt`、`RecordsScreen.kt`、`Kml.kt`、`CaptureService.kt`、`Dashboard.kt`、`MainActivity.kt`、`MapScreen.kt`、`AmapScreen.kt`、`performance/RunCycle.kt`、`PerformanceController.kt`、`PerformanceScreen.kt` 及对应单测；`README.md`、`PROJECT_STATE.md`、`docs/agent/*`
+- 验证结果：P16 上 `assembleDebug`、`testDebugUnitTest`、`lintDebug` 通过（以本轮构建日志为准）。已多次覆盖安装到 S23 Ultra（SM-S9180）并保留数据。本轮功能与室外实车仍需用户验收。
+- 兼容性影响：`metadata.json` 新增可选字段 `displayName`、`recordingDurationNs`、`movingDurationNs`、`distanceMeters`、`endedUtcMs`、`tripMetricsVersion`、`movingSpeedThresholdKmh`；旧会话缺字段时首次扫描补写。不改远程协议。原始定位与导出坐标仍为 WGS84。
+
 ## 2026-11-17 10:20 Asia/Shanghai — CMTS · Android开发
 
 - 功能名称：落地多 Agent 文档结构

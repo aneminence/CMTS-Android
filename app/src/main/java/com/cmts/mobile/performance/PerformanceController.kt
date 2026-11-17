@@ -101,8 +101,8 @@ object PerformanceController {
         private set
 
     /**
-     * Live 成绩 table: completed scores of the current (or just-finished) run only, appended as each
-     * segment finishes. Cleared when the next run actually starts, not when it is (re-)armed.
+     * Live 成绩 table: completed scores of the current recording session, appended as each
+     * segment finishes. Stop-and-go re-arm must not clear the table; only a new recording does.
      */
     var sessionResults by mutableStateOf<List<AttemptSummary>>(emptyList())
         private set
@@ -281,8 +281,8 @@ object PerformanceController {
 
     /**
      * Arm one or more segments; all share the same GNSS stream until each finishes or cancel.
-     * Arming turns continuous mode on. The live score table is NOT cleared here; it is cleared when
-     * the new run actually starts (see [RunCycle]).
+     * Arming turns continuous mode on. The live score table is not cleared here or when the next
+     * stop-and-go run starts; [bindCaptureSession] clears it for a new recording.
      */
     fun arm(filesDir: File, configs: List<PerformanceConfig>): Boolean {
         if (configs.isEmpty()) {
@@ -339,11 +339,7 @@ object PerformanceController {
 
     private fun observeLocked(seg: LiveSegment, phase: PerformancePhase) {
         if (phase in RunCycle.RUN_STARTED_PHASES) seg.started = true
-        if (cycle.observe(phase)) {
-            resultEpoch++
-            // New run began: drop the previous run's scores from the live table.
-            main.post { sessionResults = emptyList() }
-        }
+        cycle.observe(phase)
     }
 
     fun arm(filesDir: File, config: PerformanceConfig): Boolean = arm(filesDir, listOf(config))
@@ -507,3 +503,9 @@ fun PerformanceMode.shortLabel(): String = when (this) {
     PerformanceMode.BRAKE_X_TO_0 -> "制动"
     PerformanceMode.BRAKE_X_TO_Y -> "减速"
 }
+
+fun PerformanceMode.isAcceleration(): Boolean =
+    this == PerformanceMode.ACCEL_0_TO_X || this == PerformanceMode.ACCEL_X_TO_Y
+
+fun PerformanceMode.isBraking(): Boolean =
+    this == PerformanceMode.BRAKE_X_TO_0 || this == PerformanceMode.BRAKE_X_TO_Y

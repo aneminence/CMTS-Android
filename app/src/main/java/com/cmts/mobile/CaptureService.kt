@@ -43,6 +43,10 @@ object Live {
     var rates by mutableStateOf(mapOf<String, Double?>())
     var track by mutableStateOf(listOf<TrackPoint>())
     var startedNanos by mutableStateOf(0L)
+    /** Moving time (excludes stops) of the active recording; 0 when not recording. */
+    var tripMovingNs by mutableStateOf(0L)
+    /** Speed-integrated distance (m) of the active recording; 0 when not recording. */
+    var tripDistanceM by mutableStateOf(0.0)
     internal var mountZero by mutableStateOf(MountZero())
     /** Service process is alive for recording and/or performance. */
     var serviceAlive by mutableStateOf(false)
@@ -72,6 +76,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     private val latestSamples = mutableMapOf<String, Sample>()
     private val latestRates = mutableMapOf<String, Double?>()
     private var lastUiPostNanos = 0L
+    private val trip = TripMetrics.Accumulator()
     private var listenersUp = false
     private var recordHold = false
     private var recordingPaused = false
@@ -278,6 +283,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
     }
 
     private fun releaseClient(client: String) {
+        var discarded = false
         when (client) {
             CLIENT_PERF -> {
                 handler.removeCallbacks(perfHoldWatch)
@@ -296,12 +302,12 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 }
             }
             else -> {
-                if (recordHold) stopRecordingSession()
+                if (recordHold) discarded = stopRecordingSession()
                 recordHold = false
                 if (RecordingStateMachine.snapshot() == RecordingState.ERROR) return
             }
         }
-        main.post { Live.status = statusText() }
+        main.post { Live.status = if (discarded) "轨迹过短，未记录" else statusText() }
         if (!recordHold && !perfHold && !remoteHold && !usbHold) {
             wake?.let { if (it.isHeld) it.release() }
             wake = null
@@ -545,6 +551,7 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
         lastUiPostNanos = 0L
         Live.track = emptyList()
         Live.startedNanos = SystemClock.elapsedRealtimeNanos()
+        trip.reset()
         sequence = 0L
         rates.clear()
         folder = File(filesDir, "sessions/${java.util.UUID.randomUUID()}").also {
@@ -599,47 +606,69 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             "无法进入录制状态：${RecordingStateMachine.snapshot()}"
         }
         recordingPaused = false
-        main.post { Live.running = true; Live.recordingPaused = false }
+        main.post { Live.running = true; Live.recordingPaused = false; Live.tripMovingNs = 0L; Live.tripDistanceM = 0.0 }
     }
 
-    private fun stopRecordingSession() {
+    private fun stopRecordingSession(): Boolean {
         recordingPaused = false
         LaunchCalibration.cancel()
         RecordingStateMachine.tryTransition(RecordingState.STOPPING)
         RecordingStateMachine.tryTransition(RecordingState.SAVING)
         val zeroSnapshot = Live.mountZero
+        var discarded = false
         try {
             writer?.close()
             writer = null
             folder?.let { dir ->
-                val metaFile = File(dir, "metadata.json")
-                if (metaFile.exists()) {
-                    val meta = JSONObject(metaFile.readText())
-                    meta.put("mountZeroEnabled", zeroSnapshot.enabled)
-                    if (zeroSnapshot.enabled) {
-                        zeroSnapshot.basis?.let { b ->
-                            fun vector(v: V3) = org.json.JSONArray(listOf(v.x,v.y,v.z))
-                            meta.put("finalMountBasis", org.json.JSONArray(listOf(vector(b.forward),vector(b.left),vector(b.up))))
+                val recNs = (SystemClock.elapsedRealtimeNanos() - Live.startedNanos).coerceAtLeast(0L)
+                val tripSnap = trip.snapshot(recNs)
+                if (TripMetrics.isEmptyTrip(tripSnap.distanceMeters)) {
+                    val sessionsRoot = File(filesDir, "sessions").canonicalFile
+                    if (dir.canonicalFile.parentFile == sessionsRoot) dir.deleteRecursively()
+                    discarded = true
+                } else {
+                    val metaFile = File(dir, "metadata.json")
+                    if (metaFile.exists()) {
+                        val meta = JSONObject(metaFile.readText())
+                        meta.put("mountZeroEnabled", zeroSnapshot.enabled)
+                        if (zeroSnapshot.enabled) {
+                            zeroSnapshot.basis?.let { b ->
+                                fun vector(v: V3) = org.json.JSONArray(listOf(v.x,v.y,v.z))
+                                meta.put("finalMountBasis", org.json.JSONArray(listOf(vector(b.forward),vector(b.left),vector(b.up))))
+                            }
+                            meta.put("mountZeroAccel", org.json.JSONArray(zeroSnapshot.accel))
+                            meta.put("mountZeroGyro", org.json.JSONArray(zeroSnapshot.gyro))
+                            meta.put("mountZeroAttitude", org.json.JSONArray(zeroSnapshot.attitude))
+                            meta.put("mountZeroAtElapsedNanos", zeroSnapshot.zeroedAtElapsedNanos)
+                            meta.put(
+                                "mountZeroNote",
+                                "mountZero rotates live display into calibrated vehicle axes; Dashboard accel uses gravity removal from rotation vector/attitude. samples.csv phone.* and vehicle.* remain raw (accel includes gravity).",
+                            )
                         }
-                        meta.put("mountZeroAccel", org.json.JSONArray(zeroSnapshot.accel))
-                        meta.put("mountZeroGyro", org.json.JSONArray(zeroSnapshot.gyro))
-                        meta.put("mountZeroAttitude", org.json.JSONArray(zeroSnapshot.attitude))
-                        meta.put("mountZeroAtElapsedNanos", zeroSnapshot.zeroedAtElapsedNanos)
-                        meta.put(
-                            "mountZeroNote",
-                            "mountZero rotates live display into calibrated vehicle axes; Dashboard accel uses gravity removal from rotation vector/attitude. samples.csv phone.* and vehicle.* remain raw (accel includes gravity).",
-                        )
+                        meta.put("gnssSource", if (Live.gnssSource == GnssSource.EXTERNAL) "um982_usb" else "phone.gps")
+                        val endedUtc = System.currentTimeMillis()
+                        meta.put("endedUtcMs", endedUtc)
+                        val startedUtc = meta.optLong("startedUtcMs", endedUtc)
+                        meta.put("recordingDurationNs", tripSnap.recordingDurationNs)
+                        meta.put("movingDurationNs", tripSnap.movingDurationNs)
+                        meta.put("distanceMeters", tripSnap.distanceMeters)
+                        meta.put("tripMetricsVersion", TripMetrics.VERSION)
+                        meta.put("movingSpeedThresholdKmh", TripMetrics.MOVING_SPEED_THRESHOLD_KMH)
+                        if (meta.optString("displayName").isBlank()) {
+                            val label = java.text.SimpleDateFormat("yyyy-MM-dd  HH:mm:ss", java.util.Locale.getDefault())
+                                .format(java.util.Date(startedUtc))
+                            meta.put("displayName", label)
+                        }
+                        meta.put("status", "closed")
+                        metaFile.writeText(meta.toString(2))
                     }
-                    meta.put("gnssSource", if (Live.gnssSource == GnssSource.EXTERNAL) "um982_usb" else "phone.gps")
-                    meta.put("status", "closed")
-                    metaFile.writeText(meta.toString(2))
+                    // Publish completion only after every row and metadata have been saved.
+                    File(dir, "closed.marker").writeText("${System.currentTimeMillis()}")
                 }
-                // Publish completion only after every row and metadata have been saved.
-                File(dir, "closed.marker").writeText("${System.currentTimeMillis()}")
             }
         } catch (e: Exception) {
             fail(e)
-            return
+            return false
         }
         run {
             Live.activeSession = null
@@ -647,9 +676,16 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
             RecordingStateMachine.markSession(null, null)
             val next = if (perfHold || remoteHold || previewVisible || usbHold) RecordingState.READY else RecordingState.IDLE
             RecordingStateMachine.tryTransition(next)
-            main.post { Live.running = false; Live.recordingPaused = false }
+            main.post {
+                Live.running = false
+                Live.recordingPaused = false
+                Live.tripMovingNs = 0L
+                Live.tripDistanceM = 0.0
+                if (discarded) Live.status = "轨迹过短，未记录"
+            }
             if (!perfHold) PerformanceController.bindCaptureSession(null)
         }
+        return discarded
     }
 
     private fun fail(e: Exception) {
@@ -716,6 +752,9 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                     val point = TrackPoint(lat, lon, sample.nanos)
                     main.post { Live.track = (Live.track + point).takeLast(10000) }
                 }
+                if (recordHold && !recordingPaused) {
+                    trip.onFix(sample.nanos, sample.values.getOrNull(3))
+                }
             }
             latestRates[sample.source] = rate
             // Publish every GNSS fix; other sensors refresh at up to 20 Hz.
@@ -725,9 +764,14 @@ class CaptureService : Service(), SensorEventListener, LocationListener {
                 val sampleSnapshot = latestSamples.toMap()
                 if (remoteHold) Live.remoteSamples = sampleSnapshot
                 val rateSnapshot = latestRates.toMap()
+                val tripSnap = trip.snapshot(0L)
                 main.post {
                     Live.samples = sampleSnapshot
                     Live.rates = rateSnapshot
+                    if (recordHold) {
+                        Live.tripMovingNs = tripSnap.movingDurationNs
+                        Live.tripDistanceM = tripSnap.distanceMeters
+                    }
                 }
             }
         } catch (e: Exception) {

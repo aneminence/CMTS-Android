@@ -1,6 +1,6 @@
 # 架构与接口约定
 
-本文对照 `master` @ `0abde54`（版本 0.1.6）的源码整理。旧文件 `docs/architecture.md` 仍写「USB UM982 仅预留契约、当前未接入」，**已过时**，不要再按那份理解现状。
+本文对照版本 0.1.7 源码。旧文件 `docs/architecture.md` 仍写「USB UM982 仅预留契约、当前未接入」，**已过时**，不要再按那份理解现状。
 
 架构未在本轮发生变化；只有实际代码结构或协议变化时才需要改本文。
 
@@ -14,9 +14,9 @@
 | 定位源 | `GnssSource.kt`、`NmeaParser.kt` | 手机 GNSS 或外接 UM982 NMEA；`NmeaFixAssembler` 同一 UTC 历元最多输出一次定位 |
 | USB 串口 | `UsbSerialHub.kt`、`UsbSerialPorts.kt`、`UsbDebugActivity.kt` | CH344Q / CH340 共享会话；调试页与后台定位共用连接，应用不发送模块配置命令 |
 | 地图 | `MapScreen.kt`、`AmapScreen.kt`、`MapMath.kt`、`TrackRendering.kt` | Google 卫星瓦片按 WGS84 自绘；高德 SDK 仅作显示，用 `CoordinateConverter` 转 GCJ-02 |
-| 仪表与性能 | `Dashboard.kt`、性能测试引擎 | 实时仪表、连续计分、成绩表 |
+| 仪表与性能 | `Dashboard.kt`、`GgPlot.kt`、性能测试引擎 | 实时仪表（含录制/行驶时间与里程）、GG 图、连续计分、成绩表 |
 | 姿态 | `Attitude.kt`、`VehicleAttitudeEstimator.kt`、`AttitudePipeline.kt`、`AttitudeRecompute.kt` | 原系统旋转矢量姿态保留；实验估算并行输出 `estimate.*` |
-| 记录与导出 | `RecordsScreen.kt`、`Vbo.kt`、`Kml.kt`、`SessionCsvWriter.kt` | 会话列表、回放、VBO/KML/CSV |
+| 记录与导出 | `RecordsScreen.kt`、`SessionCatalog.kt`、`TripMetrics.kt`、`Vbo.kt`、`Kml.kt`、`SessionCsvWriter.kt` | 会话列表（显示名、时长、里程缓存）、回放、打开/导出 VBO/KML/CSV |
 | 回放 | `Replay.kt` 及 `Replay*.kt` | 与 Live 隔离；可应用会话保存的安装归零 |
 | 远程 | `remote/RemoteWsServer.kt`、`RemoteProtocol.kt`、`RemoteSamplePayload.kt`、`RemoteDiscovery.kt` | 局域网 WebSocket 服务端与发现 |
 | 录制状态 | `RecordingState.kt` | 本端录制状态机；暂停目前不是独立协议状态 |
@@ -41,7 +41,8 @@
 - 定位源：`GnssSource.PHONE` 或 `GnssSource.EXTERNAL`。外接优先选用 NMEA 口（CH344Q 默认偏好 UART3）；`onLocationChanged` 在外接模式下直接返回，避免两路定位画到同一条轨迹。
 - 外接 NMEA：校验和无效的句子不成为定位；GGA quality>0 或 RMC status A 才有位置；同一历元优先用 GGA 的纬经度，RMC 补速度与时间。
 - 车辆坐标（ADR-002）：屏幕朝上、顶部朝车头；`vehicle.X = device.Y`，`vehicle.Y = -device.X`，`vehicle.Z = device.Z`。固定轴映射不是安装标定，原始 `phone.*` 仍保留。
-- 地图（ADR-003）：Google 卫星 XYZ 瓦片用于自绘底图，不宣称商用授权。高德 Key 仅来自被 git 忽略的 `local.properties`。切换底图会重建视图，视角暂不跨地图保留。
+- 行程计量：用定位速度对时间积分，不用经纬度折线；运动阈值 0.5 km/h；结果写入 `metadata.json`，列表只读缓存。
+- 地图（ADR-003）：Google 卫星 XYZ 瓦片用于自绘底图，不宣称商用授权。自绘最大整数缩放为 21。锁定跟随时只更新中心，不改当前缩放。高德 Key 仅来自被 git 忽略的 `local.properties`。切换底图会重建视图，视角暂不跨地图保留。
 - UI（ADR-001）：Jetpack Compose，深色 + 香槟金 `#D4AF37`。
 
 ## 重要设计决策

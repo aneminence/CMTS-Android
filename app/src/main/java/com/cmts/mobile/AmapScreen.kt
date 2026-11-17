@@ -71,6 +71,7 @@ private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, co
   MapView(context).apply { onCreate(null) }
  }
  var follow by remember { mutableStateOf(true) }
+ var positioned by remember { mutableStateOf(false) }
  val track = offlineTrack ?: Live.track
  DisposableEffect(view, owner) {
   val observer = LifecycleEventObserver { _, event -> when(event) {
@@ -103,7 +104,14 @@ private fun AmapTrackMap(modifier: Modifier, offlineTrack: List<TrackPoint>?, co
  }
  LaunchedEffect(trackColor, track) { (overlays[0] as? Polyline)?.color = trackColor }
  LaunchedEffect(points.lastOrNull(), follow) {
-  if (follow) points.lastOrNull()?.let { view.map.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 16f)) }
+  if (follow) points.lastOrNull()?.let {
+   if (!positioned) {
+    view.map.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 16f))
+    positioned = true
+   } else {
+    view.map.moveCamera(CameraUpdateFactory.newLatLng(it))
+   }
+  }
  }
  Box(modifier) {
   AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())

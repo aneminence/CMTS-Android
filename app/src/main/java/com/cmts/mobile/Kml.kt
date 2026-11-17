@@ -1,10 +1,73 @@
 package com.cmts.mobile
 
 import java.io.File
+import java.io.Reader
 import java.io.Writer
+import java.time.Instant
+
+data class KmlData(val name: String, val track: List<TrackPoint>)
 
 /** WGS84 ground track. No inferred location or conversion to map-provider coordinates. */
 object Kml {
+ private val whenTag = Regex("<when>(.*?)</when>", RegexOption.IGNORE_CASE)
+ private val gxCoord = Regex("<(?:gx:)?coord>(.*?)</(?:gx:)?coord>", RegexOption.IGNORE_CASE)
+ private val coordinateBlock = Regex("<coordinates\\b[^>]*>(.*?)</coordinates>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+ private val nameTag = Regex("<name>(.*?)</name>", RegexOption.IGNORE_CASE)
+ private val isoOffset = Regex("([+-]\\d{2}):?(\\d{2})$")
+
+ fun read(reader: Reader): KmlData {
+  val text = reader.readText().trim().removePrefix("\uFEFF")
+  require(text.isNotEmpty()) { "文件是空的" }
+  val title = nameTag.find(text)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() } ?: "KML 轨迹"
+  val track = readGxTrack(text).ifEmpty { readCoordinates(text) }
+  require(track.isNotEmpty()) { "文件没有可识别的 KML 轨迹点" }
+  return KmlData(title, track)
+ }
+
+ private fun readGxTrack(text: String): List<TrackPoint> {
+  val times = whenTag.findAll(text).map { parseWhen(it.groupValues[1].trim()) }.toList()
+  val coords = gxCoord.findAll(text).mapNotNull { parseGxCoord(it.groupValues[1]) }.toList()
+  if (coords.isEmpty()) return emptyList()
+  return coords.mapIndexed { index, latlon ->
+   val time = times.getOrNull(index) ?: (index * 1_000_000_000L)
+   TrackPoint(latlon.first, latlon.second, time)
+  }
+ }
+
+ private fun readCoordinates(text: String): List<TrackPoint> {
+  val points = mutableListOf<TrackPoint>()
+  coordinateBlock.findAll(text).forEach { block ->
+   block.groupValues[1].trim().split(Regex("\\s+")).forEach { token ->
+    val parts = token.split(',')
+    val lon = parts.getOrNull(0)?.toDoubleOrNull() ?: return@forEach
+    val lat = parts.getOrNull(1)?.toDoubleOrNull() ?: return@forEach
+    if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return@forEach
+    points += TrackPoint(lat, lon, points.size * 1_000_000_000L)
+   }
+  }
+  return points
+ }
+
+ private fun parseGxCoord(raw: String): Pair<Double, Double>? {
+  val parts = raw.trim().split(Regex("\\s+"))
+  val lon = parts.getOrNull(0)?.toDoubleOrNull() ?: return null
+  val lat = parts.getOrNull(1)?.toDoubleOrNull() ?: return null
+  if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return null
+  return lat to lon
+ }
+
+ private fun parseWhen(raw: String): Long {
+  val instant = runCatching { Instant.parse(raw) }.getOrNull()
+   ?: runCatching { Instant.parse(normalizeIso(raw)) }.getOrNull()
+  return instant?.toEpochMilli()?.let { it * 1_000_000L } ?: 0L
+ }
+
+ private fun normalizeIso(raw: String): String {
+  val t = raw.trim()
+  if (t.endsWith("Z") || isoOffset.containsMatchIn(t)) return t
+  return t + "Z"
+ }
+
  fun export(session: File, writer: Writer): Int {
   require(File(session, "closed.marker").exists()) { "记录尚未关闭，不能导出 KML" }
   val times = StringBuilder()
@@ -45,4 +108,3 @@ object Kml {
   return count
  }
 }
-

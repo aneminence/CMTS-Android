@@ -22,6 +22,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.provider.OpenableColumns
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.widget.Toast
@@ -128,7 +129,8 @@ class MainActivity : ComponentActivity() {
  }
  private var fileStatus by mutableStateOf("")
  private var busy by mutableStateOf(false)
- private var imported by mutableStateOf<VboData?>(null)
+ private var importedVbo by mutableStateOf<VboData?>(null)
+ private var importedKml by mutableStateOf<KmlData?>(null)
  private var replay by mutableStateOf<ReplayData?>(null)
  private var replayIndex by mutableIntStateOf(0)
  private var replaySpeed by mutableDoubleStateOf(1.0)
@@ -174,15 +176,39 @@ class MainActivity : ComponentActivity() {
   val count = withContext(Dispatchers.IO) {
    File(cacheDir, "export.kml").bufferedWriter().use { Kml.export(session, it) }
   }
-  exportKml.launch("cmts-${session.name}.kml")
+  exportKml.launch("${SessionCatalog.exportBaseName(session)}.kml")
   "KML 已生成（$count 个真实 GNSS 点），请选择保存位置"
  }
- private val openVbo = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+ private val openRecordingFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
   if(uri != null) job {
-   val data = withContext(Dispatchers.IO) { requireNotNull(contentResolver.openInputStream(uri)).bufferedReader().use { Vbo.read(it) } }
-   imported = data
-   "已打开 ${data.rows.size} 行、${data.columns.size} 个通道；离线文件"
+   withContext(Dispatchers.IO) {
+    val name = uriDisplayName(uri)
+    val text = requireNotNull(contentResolver.openInputStream(uri)).bufferedReader().use { it.readText() }
+    if (looksLikeKml(name, text)) {
+     importedKml = Kml.read(text.reader())
+     importedVbo = null
+     "已打开 KML「${importedKml!!.name}」，${importedKml!!.track.size} 个轨迹点；离线文件"
+    } else {
+     importedVbo = Vbo.read(text.reader())
+     importedKml = null
+     "已打开 ${importedVbo!!.rows.size} 行、${importedVbo!!.columns.size} 个通道；离线文件"
+    }
+   }
   }
+ }
+ private fun uriDisplayName(uri: android.net.Uri): String {
+  contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+   val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+   if (index >= 0 && cursor.moveToFirst()) return cursor.getString(index).orEmpty()
+  }
+  return uri.lastPathSegment.orEmpty()
+ }
+ private fun looksLikeKml(name: String, text: String): Boolean {
+  val lower = name.lowercase()
+  if (lower.endsWith(".kml")) return true
+  if (lower.endsWith(".vbo")) return false
+  val head = text.trimStart().removePrefix("\uFEFF").take(256).lowercase()
+  return head.contains("<kml") || (head.startsWith("<?xml") && "kml" in head)
  }
  private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
   if(result[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
@@ -219,7 +245,7 @@ class MainActivity : ComponentActivity() {
   val prepared = withContext(Dispatchers.IO) {
    File(cacheDir, "export.vbo").also { file -> file.bufferedWriter().use { Vbo.export(session, it) } }
   }
-  preparedVbo = prepared; exportVbo.launch("cmts-${session.name}.vbo")
+  preparedVbo = prepared; exportVbo.launch("${SessionCatalog.exportBaseName(session)}.vbo")
   "VBO 已生成，请选择保存位置"
  }
  private fun toggleRecording() {
@@ -295,8 +321,8 @@ class MainActivity : ComponentActivity() {
     Surface(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
      .safeDrawingPadding().clipToBounds()) {
      if(filesVisible) {
-      RecordsScreen(filesDir, busy, fileStatus, imported,
-       onBack = { filesVisible = false }, onOpen = { openVbo.launch(arrayOf("*/*")) },
+      RecordsScreen(filesDir, busy, fileStatus, importedVbo, importedKml,
+       onBack = { filesVisible = false }, onOpen = { openRecordingFile.launch(arrayOf("*/*", "application/vnd.google-earth.kml+xml", "application/xml", "text/xml", "application/octet-stream")) },
        onDelete = { session -> job {
         withContext(Dispatchers.IO) {
          require(session.canonicalFile.parentFile == File(filesDir, "sessions").canonicalFile && session != Live.activeSession) { "无法删除当前记录" }
@@ -306,8 +332,9 @@ class MainActivity : ComponentActivity() {
         if (csvSession == session) csvSession = null
         "已删除记录"
        } },
-       onCsv = { csvSession = it; exportCsv.launch("cmts-${it.name}.csv") }, onReplay = { openReplay(it) }, onVbo = { prepareVbo(it) }, onKml = { prepareKml(it) },
-       onCloseFile = { imported = null })
+       onCsv = { csvSession = it; exportCsv.launch("${SessionCatalog.exportBaseName(it)}.csv") }, onReplay = { openReplay(it) }, onVbo = { prepareVbo(it) }, onKml = { prepareKml(it) },
+       onRename = { session, name -> job { withContext(Dispatchers.IO) { SessionCatalog.rename(session, name) }; "已重命名" } },
+       onCloseFile = { importedVbo = null; importedKml = null })
      } else {
       MainCaptureScreen(
        history = replay,
@@ -689,6 +716,7 @@ private fun MainCaptureScreen(
     RemoteEndpointRow()
     Dashboard(frame, landscape = false)
     TextButton(onClick = onUsbDebug) { Text("USB 设备调试") }
+    Text("版本 ${cmtsVersionLabel(LocalContext.current)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     val context = LocalContext.current
     val power = context.getSystemService(android.os.PowerManager::class.java)
     if(power.isPowerSaveMode) {
@@ -733,13 +761,13 @@ private fun MainCaptureScreen(
      if (!sheetExpanded) when (page) {
       0 -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) { PeekOrDashChrome(false) }
       1 -> com.cmts.mobile.performance.CompactPerformanceResults(filesDir)
-      2 -> CompactAttitude(frame, horizontal = true)
+      2 -> CompactAttitude(frame, horizontal = true, history = history)
       3 -> history?.let { ReplayCurves(it, replayIndex) { index -> onPlaying(false); onReplayIndex(index) } }
      } else when (page) {
       0 -> Column(Modifier.fillMaxSize().verticalScroll(dashScroll), verticalArrangement = Arrangement.spacedBy(4.dp)) {
        PeekOrDashChrome(includeFullDash = true)
       }
-      2 -> AttitudePane(frame)
+      2 -> AttitudePane(frame, history = history)
       3 -> history?.let { ReplayCurves(it, replayIndex) { index -> onPlaying(false); onReplayIndex(index) } }
       else -> PerformancePane(
        filesDir = filesDir,
@@ -791,6 +819,7 @@ private fun MainCaptureScreen(
       if (history == null) TextButton(onClick = onToggleRecording) { Text(if(Live.running) { if (Live.recordingPaused) "继续记录" else "暂停记录" } else "开始记录", style = MaterialTheme.typography.titleLarge) }
       if (inlineReplay) PlaybackActions()
       TextButton(onClick = onUsbDebug) { Text("USB") }
+      Text("v${cmtsVersionLabel(LocalContext.current)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
       TextButton(onClick = onCollapse) { Text(if (panelOnEnd) "收起 →" else "收起 ←") }
      }
      if (history != null && !inlineReplay) Row { PlaybackActions() }
@@ -814,7 +843,7 @@ private fun MainCaptureScreen(
        { GnssSourceSwitch(onSelect = onSelectGnssSource, compact = true) }
       } else null)
      }
-     2 -> AttitudePane(frame, landscape = true)
+     2 -> AttitudePane(frame, landscape = true, history = history)
       3 -> history?.let { ReplayCurves(it, replayIndex) { index -> onPlaying(false); onReplayIndex(index) } }
       else -> PerformancePane(
       filesDir = filesDir,

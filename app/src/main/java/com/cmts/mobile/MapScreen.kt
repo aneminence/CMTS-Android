@@ -31,6 +31,8 @@ import kotlin.math.*
 // Provider-specific configuration stays outside sensor/storage code. WGS84 is never modified.
 internal object SatelliteTiles {
  const val attribution = "© Google"
+ /** Integer zoom Google satellite XYZ tiles commonly serve; 19 was too coarse for fine tracks. */
+ const val MAX_ZOOM = 21
  fun url(z: Int, x: Int, y: Int) = "https://mt0.google.com/vt/lyrs=s&x=$x&y=$y&z=$z"
 }
 
@@ -59,7 +61,7 @@ fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>
    if (!positioned) { zoom = 16.0; positioned = true }
   }
  }
- val z = floor(zoom).toInt().coerceIn(1, 19)
+ val z = floor(zoom).toInt().coerceIn(1, SatelliteTiles.MAX_ZOOM)
  val count = 1 shl z
  val tileSize = 256.0 * 2.0.pow(zoom - z)
  val worldSize = tileSize * count
@@ -120,7 +122,7 @@ fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>
     follow = false
     val size = 256 * 2.0.pow(zoom)
     center = WorldPoint(wrapX(center.x - pan.x / size), (center.y - pan.y / size).coerceIn(0.0, 1.0))
-    zoom = (zoom + ln(scale.toDouble()) / ln(2.0)).coerceIn(1.0, 19.0)
+    zoom = (zoom + ln(scale.toDouble()) / ln(2.0)).coerceIn(1.0, SatelliteTiles.MAX_ZOOM.toDouble())
    }
   }) {
    // Draw cached levels first, spatially aligned, so zoom does not flash blank.
@@ -171,7 +173,7 @@ fun GoogleTrackMap(modifier: Modifier = Modifier, offlineTrack: List<TrackPoint>
   }
   if(landscape) Text(SatelliteTiles.attribution, modifier = Modifier.align(Alignment.TopCenter).padding(6.dp), color = Color.White, style = MaterialTheme.typography.labelSmall)
   Column(Modifier.align(if(controlsOnStart) Alignment.TopStart else Alignment.TopEnd).statusBarsPadding().padding(top = 168.dp, start = 12.dp, end = 12.dp), horizontalAlignment = if(controlsOnStart) Alignment.Start else Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-   MapControl(onClick = { zoom = (zoom + 1).coerceAtMost(19.0) }) { Text("＋") }
+   MapControl(onClick = { zoom = (zoom + 1).coerceAtMost(SatelliteTiles.MAX_ZOOM.toDouble()) }) { Text("＋") }
    MapControl(onClick = { zoom = (zoom - 1).coerceAtLeast(1.0) }) { Text("－") }
 
    MapControl(onClick = { follow = !follow }) { Text(if (follow) "已锁定" else "锁定定位") }

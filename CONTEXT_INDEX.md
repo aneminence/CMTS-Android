@@ -13,12 +13,13 @@
 | [docs/agent/ARCHITECTURE.md](docs/agent/ARCHITECTURE.md) | 对照当前代码的架构与接口约定 |
 | [docs/agent/KNOWN_ISSUES.md](docs/agent/KNOWN_ISSUES.md) | 已知问题与技术债 |
 
-最新已合入功能的历史交接：[2026-11-16 开发进度](docs/GROKBOT_HANDOFF_2026-11-16.md)（暂停录制、2 秒长按停止、S23 安装与待验收项）。
+最新已合入功能的历史交接：[2026-11-17 开发进度](docs/GROKBOT_HANDOFF_2026-11-17.md)（0.1.7 记录/行程/GG 图与成绩累计）。
 
 ## 历史交接（保留，勿覆盖）
 
 | 文档 | 角色 |
 |------|------|
+| [docs/GROKBOT_HANDOFF_2026-11-17.md](docs/GROKBOT_HANDOFF_2026-11-17.md) | 0.1.7 记录、行程、GG 图 |
 | [docs/GROKBOT_HANDOFF_2026-11-16.md](docs/GROKBOT_HANDOFF_2026-11-16.md) | 0.1.6 录制控制 |
 | [docs/GROKBOT_HANDOFF_2026-11-10_SMART_LAN.md](docs/GROKBOT_HANDOFF_2026-11-10_SMART_LAN.md) | Smart LAN |
 | [docs/GROKBOT_HANDOFF_2026-11-09_REMOTE_LAN_P0.md](docs/GROKBOT_HANDOFF_2026-11-09_REMOTE_LAN_P0.md) | 远程局域网 P0 |
@@ -66,8 +67,9 @@
 | 采集 | `CaptureService.kt` |
 | 定位 / NMEA / USB | `GnssSource.kt`、`NmeaParser.kt`、`UsbSerialHub.kt`、`UsbDebugActivity.kt` |
 | 姿态 / 车辆 | `Attitude.kt`、`VehicleAttitudeEstimator.kt`、`AttitudePipeline.kt` |
-| 仪表 / 性能 | `Dashboard.kt`、`Model.kt` |
-| 记录 / VBO / 回放 | `RecordsScreen.kt`、`Vbo.kt`、`Replay.kt` |
+| 仪表 / 性能 / GG | `Dashboard.kt`、`GgPlot.kt`、`Model.kt` |
+| 行程计量 | `TripMetrics.kt`、`SessionCatalog.kt` |
+| 记录 / VBO / 回放 | `RecordsScreen.kt`、`Vbo.kt`、`Kml.kt`、`Replay.kt` |
 | 远程 | `remote/*` |
 | 测试 | `app/src/test/java/com/cmts/mobile/*Test.kt` |
 

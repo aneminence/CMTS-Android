@@ -56,7 +56,7 @@ class RunCycleTest {
     }
 
     @Test
-    fun scoresStayAfterRearm_andClearOnlyWhenNextRunStarts() {
+    fun scoresAccumulateAcrossStopAndGo_untilClearResults() {
         val cycle = RunCycle<String>()
         var engine = armed()
         cycle.onArmed()
@@ -64,24 +64,22 @@ class RunCycleTest {
         assertEquals(PerformancePhase.Completed, launch(engine, cycle, "run1"))
         assertEquals(listOf("run1"), cycle.rows)
 
-        // Round finished → re-arm the same config; last run's score must remain visible.
+        // Round finished → re-arm; last run's score must remain visible.
         assertEquals(RunCycle.RoundAction.REARM, cycle.onRoundFinished())
         engine = armed()
         cycle.onArmed()
         assertEquals(listOf("run1"), cycle.rows)
 
-        // Waiting (Armed / Ready) does not clear.
         stationary(engine, cycle, "run2")
-        assertNotEquals(PerformancePhase.Running, engine.snapshot().phase)
-        assertEquals(listOf("run1"), cycle.rows)
-
-        // Next run actually starts → table cleared, then refilled with only the new score.
         assertEquals(PerformancePhase.Completed, launch(engine, cycle, "run2"))
-        assertEquals(listOf("run2"), cycle.rows)
+        assertEquals(listOf("run1", "run2"), cycle.rows)
+
+        cycle.clearResults()
+        assertTrue(cycle.rows.isEmpty())
     }
 
     @Test
-    fun timeoutOrInvalidWithoutRunning_doesNotClear() {
+    fun observeNeverClearsSessionTable() {
         val cycle = RunCycle<String>()
         cycle.onCompleted("previous")
         cycle.onArmed()
@@ -89,24 +87,22 @@ class RunCycleTest {
         assertFalse(cycle.observe(PerformancePhase.Ready))
         assertFalse(cycle.observe(PerformancePhase.StartCandidate))
         assertFalse(cycle.observe(PerformancePhase.Invalid))
-        assertEquals(listOf("previous"), cycle.rows)
-        assertTrue(cycle.observe(PerformancePhase.Running))
-        assertTrue(cycle.rows.isEmpty())
-        // Only the first start clears; later segments of the same run append normally.
-        cycle.onCompleted("a")
         assertFalse(cycle.observe(PerformancePhase.Running))
-        assertEquals(listOf("a"), cycle.rows)
+        assertEquals(listOf("previous"), cycle.rows)
+        cycle.onCompleted("a")
+        assertEquals(listOf("previous", "a"), cycle.rows)
     }
 
     @Test
-    fun liveTableHoldsOnlyCurrentSessionRows() {
+    fun liveTableHoldsSessionRowsUntilCleared() {
         val cycle = RunCycle<String>()
         cycle.onArmed()
         cycle.observe(PerformancePhase.Running)
         cycle.onCompleted("0-60")
         cycle.onCompleted("60-100")
-        // History is never fed into the cycle; rows are exactly this session's completions.
         assertEquals(listOf("0-60", "60-100"), cycle.rows)
+        cycle.clearResults()
+        assertTrue(cycle.rows.isEmpty())
     }
 
     @Test

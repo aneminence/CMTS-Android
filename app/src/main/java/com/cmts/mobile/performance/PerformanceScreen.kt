@@ -191,7 +191,7 @@ fun PerformancePane(
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     val scores: @Composable () -> Unit = {
-        // Live table = current / just-finished run only; older runs live behind 详情 (history).
+        // Live table = current recording session; older sessions live behind 详情 (history).
         ResultsTable(
             attempts = sessionResults,
             showTitle = !landscape,
@@ -373,6 +373,8 @@ private fun ResultsTable(attempts: List<AttemptSummary>, showTitle: Boolean = tr
                         distance = formatDistance(a),
                         duration = formatDuration(a),
                         header = false,
+                        emphasizeDuration = a.mode.isAcceleration(),
+                        emphasizeDistance = a.mode.isBraking(),
                         onClick = { onOpen(a) },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
@@ -389,10 +391,14 @@ private fun ResultTableRow(
     distance: String,
     duration: String,
     header: Boolean,
+    emphasizeDuration: Boolean = false,
+    emphasizeDistance: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
     val style = if (header) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall
     val color = if (header) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+    val durationColor = if (emphasizeDuration) Champagne else color
+    val distanceColor = if (emphasizeDistance) Champagne else color
     val mod = Modifier.fillMaxWidth().then(
         if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
     ).heightIn(min = if (header) 28.dp else 48.dp).padding(vertical = 4.dp)
@@ -400,9 +406,9 @@ private fun ResultTableRow(
         Text(time, style = style, color = color, modifier = Modifier.weight(1.0f), textAlign = TextAlign.Center, maxLines = 2)
         Text(segment, style = style, color = color, modifier = Modifier.weight(1.1f), textAlign = TextAlign.Center, maxLines = 2)
         Text(distance, style = style.copy(fontFeatureSettings = "tnum", fontWeight = if (header) FontWeight.Medium else FontWeight.SemiBold),
-            color = color, modifier = Modifier.weight(0.8f), textAlign = TextAlign.Center, maxLines = 2)
+            color = if (header) color else distanceColor, modifier = Modifier.weight(0.8f), textAlign = TextAlign.Center, maxLines = 2)
         Text(duration, style = style.copy(fontFeatureSettings = "tnum", fontWeight = if (header) FontWeight.Medium else FontWeight.SemiBold),
-            color = if (header) color else Champagne, modifier = Modifier.weight(0.8f), textAlign = TextAlign.Center, maxLines = 2)
+            color = if (header) color else durationColor, modifier = Modifier.weight(0.8f), textAlign = TextAlign.Center, maxLines = 2)
     }
 }
 
@@ -494,9 +500,10 @@ private fun ResultCard(result: PerformanceResult?) {
             }
             Text("阶段 ${result.phase.name}", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            result.durationSeconds()?.let { Text("时间  ${"%.2f".format(it)} s", color = Champagne,
+            result.durationSeconds()?.let { Text("时间  ${"%.2f".format(it)} s", color = if (result.config.isAcceleration()) Champagne else MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.headlineLarge.copy(fontFeatureSettings = "tnum")) }
             result.distanceMeters?.let { Text("距离 ${"%.2f".format(it)} m",
+                color = if (result.config.isBraking()) Champagne else MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum")) }
             Text("算法 ${result.algorithmVersion}", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -557,8 +564,12 @@ internal fun CompactPerformanceResults(filesDir: File) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
      Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
       Text(formatSegment(it), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-      Text("${formatDuration(it)} · ${formatDistance(it)}", color = Champagne,
-       style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"))
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+       Text(formatDuration(it), color = if (it.mode.isAcceleration()) Champagne else MaterialTheme.colorScheme.onSurface,
+        style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"))
+       Text(formatDistance(it), color = if (it.mode.isBraking()) Champagne else MaterialTheme.colorScheme.onSurface,
+        style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"))
+      }
      }
     }
    }

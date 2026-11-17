@@ -3,10 +3,9 @@ package com.cmts.mobile.performance
 /**
  * Pure (Android-free) bookkeeping for the live 成绩 table and continuous / stay-armed runs.
  *
- * - The live table holds only the current (or just-finished) run's completed scores.
- * - Arming (manual or automatic re-arm) does NOT clear the table; it only marks that the next
- *   run should start a fresh table. The table is cleared when a segment of the new run actually
- *   starts ([RUN_STARTED_PHASES]), so the previous run stays readable while waiting.
+ * - The live table accumulates completed scores for the current capture/recording session.
+ * - Stop-and-go (re-arm after a round) must not clear already posted scores.
+ * - The table is cleared only when a new recording session starts ([clearResults]).
  * - When every armed segment is terminal, [onRoundFinished] says whether to re-arm (stay-armed on)
  *   or release capture (stay-armed off, e.g. after 取消).
  *
@@ -18,32 +17,22 @@ internal class RunCycle<T>(stayArmed: Boolean = true) {
     var stayArmed: Boolean = stayArmed
         private set
 
-    private var pendingClear = false
     private val scores = mutableListOf<T>()
 
-    /** Snapshot of the live table rows (current or just-finished run only). */
+    /** Snapshot of the live table rows for the current recording session. */
     val rows: List<T> get() = scores.toList()
 
-    val clearPending: Boolean get() = pendingClear
-
-    /** An explicitly started capture session clears only visible scores, not the armed test. */
+    /** An explicitly started capture session clears visible scores, not the armed test. */
     fun clearResults() { scores.clear() }
 
-    /** A new set of segments was armed; the table is cleared once that run starts. */
-    fun onArmed() {
-        pendingClear = true
-    }
+    /** A new set of segments was armed; scores of this recording stay visible. */
+    fun onArmed() {}
 
     /**
-     * Report a segment phase after an engine event. Returns true if this observation started the
-     * new run and the table was just cleared.
+     * Report a segment phase after an engine event. Always returns false: starting the next
+     * stop-and-go run does not clear the session table.
      */
-    fun observe(phase: PerformancePhase): Boolean {
-        if (!pendingClear || phase !in RUN_STARTED_PHASES) return false
-        pendingClear = false
-        scores.clear()
-        return true
-    }
+    fun observe(@Suppress("UNUSED_PARAMETER") phase: PerformancePhase): Boolean = false
 
     fun onCompleted(row: T) {
         scores += row

@@ -1,5 +1,6 @@
 package com.cmts.mobile
 
+import android.content.Context
 import android.os.SystemClock
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -11,11 +12,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import java.util.Locale
 import com.cmts.mobile.remote.RemoteBridge
+
+internal fun cmtsVersionLabel(context: Context): String {
+ val name = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
+ return name?.takeIf { it.isNotBlank() } ?: "—"
+}
 
 internal fun dashboardValue(value: Double?, scale: Double = 1.0, digits: Int = 1): String =
     value?.takeIf { it.isFinite() }?.let { String.format(Locale.US, "%.${digits}f", it * scale).let { text -> if (text == "-0.0") "0.0" else text } } ?: "—"
@@ -121,6 +128,7 @@ private fun DashboardPortrait(replay: ReplayFrame?) {
    Gauge("高度", d.alt, "m", Modifier.weight(1f))
    Gauge("气压", d.pressure, "mbar", Modifier.weight(1f))
   }
+  if (replay == null) TripSummaryLine(d)
   Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
    Gauge("水平精度", d.hAcc, "m", Modifier.weight(1f))
    Gauge("垂直精度", d.vAcc, "m", Modifier.weight(1f))
@@ -164,7 +172,9 @@ private fun AxisGroup(title: String, subtitle: String, labels: List<String>, val
 @Composable
 private fun DashboardLandscape(replay: ReplayFrame?, source: (@Composable () -> Unit)?) {
  val d = rememberDashboardModel(replay)
- BoxWithConstraints(Modifier.fillMaxSize()) {
+ Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+  if (replay == null) TripSummaryLine(d)
+ BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
  val columnScale = ((maxWidth - 25.dp).value / 510f).coerceIn(0f, 1f)
  // Fit the four measurement columns in the viewport; details remain available by scrolling.
  Row(Modifier.fillMaxSize().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -192,6 +202,7 @@ private fun DashboardLandscape(replay: ReplayFrame?, source: (@Composable () -> 
    GnssCard(d)
    if (replay == null) ZeroButtons(d)
   }
+ }
  }
  }
 }
@@ -250,6 +261,9 @@ private fun SpeedModule(d: DashboardModel, modifier: Modifier) {
 
 private data class DashboardModel(
  val speed: String,
+ val recordTime: String,
+ val moveTime: String,
+ val tripDistance: String,
  val heading: String,
  val hAcc: String,
  val lat: String,
@@ -322,8 +336,15 @@ private fun rememberDashboardModel(replay: ReplayFrame?): DashboardModel {
   val hz = dashboardValue(if (replay == null && fresh) Live.rates[key] else null, digits = 1)
   Triple("$label", "${hz}Hz", fresh)
  }
+ val recording = replay == null && Live.running
+ val recordTime = if (recording) elapsedLabel(Live.startedNanos, SystemClock.elapsedRealtimeNanos()) else "—"
+ val moveTime = if (recording) elapsedLabel(0L, Live.tripMovingNs) else "—"
+ val tripDistance = if (recording) "%.2f".format(java.util.Locale.US, Live.tripDistanceM / 1000.0) else "—"
  return DashboardModel(
   speed = value(gps, 3, 3.6),
+  recordTime = recordTime,
+  moveTime = moveTime,
+  tripDistance = tripDistance,
   heading = value(gps, 4),
   hAcc = value(gps, 5),
   lat = value(gps, 0, digits = 6),
@@ -427,13 +448,41 @@ internal fun Gauge(title: String, value: String, unit: String, modifier: Modifie
  }
 }
 @Composable
+private fun TripSummaryLine(d: DashboardModel, modifier: Modifier = Modifier) {
+ Row(
+  modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 1.dp),
+  horizontalArrangement = Arrangement.SpaceEvenly,
+  verticalAlignment = Alignment.CenterVertically,
+ ) {
+  TripSummaryItem("录制时间", d.recordTime)
+  TripSummaryItem("行驶时间", d.moveTime)
+  TripSummaryItem("行驶里程", d.tripDistance, "km")
+ }
+}
+
+@Composable
+private fun RowScope.TripSummaryItem(title: String, value: String, unit: String = "") {
+ Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+  Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+  Spacer(Modifier.width(6.dp))
+  val shown = if (unit.isNotEmpty() && value != "—") "$value $unit" else value
+  Text(
+   shown,
+   style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum", fontWeight = FontWeight.Medium),
+   color = MaterialTheme.colorScheme.onSurface,
+   maxLines = 1,
+  )
+ }
+}
+
+@Composable
 internal fun AttitudeZeroAction() {
  val model = rememberDashboardModel(null)
  TextButton(onClick = model.onZero, enabled = model.canZero) { Text("归零") }
 }
 
 @Composable
-internal fun AttitudePane(frame: ReplayFrame?, landscape: Boolean = false) {
+internal fun AttitudePane(frame: ReplayFrame?, landscape: Boolean = false, history: ReplayData? = null) {
  val model = rememberDashboardModel(frame)
  val angles = model.attitude
  Column(Modifier.fillMaxSize()) {
@@ -441,55 +490,58 @@ internal fun AttitudePane(frame: ReplayFrame?, landscape: Boolean = false) {
    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
     Text(if (frame != null) "历史姿态 · 车辆坐标" else "系统姿态 · 车辆坐标",
      style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
-     modifier = Modifier.weight(1f))
+     modifier = Modifier.weight(1f), maxLines = 1)
     if (frame == null) TextButton(onClick = model.onZero, enabled = model.canZero) { Text("归零") }
    }
   }
   if (landscape) {
-   Row(Modifier.fillMaxSize().padding(6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-    for (side in listOf(true, false)) {
-     val reading = angles[if (side) 1 else 0]
-     Card(Modifier.weight(1f).fillMaxHeight(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
-      Column(Modifier.fillMaxSize().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-       Text(if (side) "俯仰 · 左视图" else "侧倾 · 正后视图", style = MaterialTheme.typography.titleSmall)
-       AttitudeDial(side, reading, Modifier.weight(1f).fillMaxWidth())
-       Text(if (reading.toFloatOrNull() == null) "—" else "$reading°",
-        color = MaterialTheme.colorScheme.primary,
-        style = MaterialTheme.typography.headlineSmall.copy(fontFeatureSettings = "tnum", fontWeight = FontWeight.Medium))
-       if (side) GradeReading(reading)
-      }
-     }
+   Row(
+    Modifier.weight(1f).padding(6.dp),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+   ) {
+    GgCard(frame, history, Modifier.weight(1f).fillMaxHeight())
+    Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+     AttitudeCard(true, angles[1], Modifier.weight(1f).fillMaxWidth())
+     AttitudeCard(false, angles[0], Modifier.weight(1f).fillMaxWidth())
     }
    }
   } else {
-   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp),
-    verticalArrangement = Arrangement.spacedBy(12.dp)) {
-    AttitudeCard(true, angles[1])
-    AttitudeCard(false, angles[0])
+   Column(
+    Modifier.weight(1f).padding(8.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+   ) {
+    GgCard(frame, history, Modifier.fillMaxWidth().weight(1.2f))
+    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+     AttitudeCard(true, angles[1], Modifier.weight(1f).fillMaxHeight())
+     AttitudeCard(false, angles[0], Modifier.weight(1f).fillMaxHeight())
+    }
    }
   }
  }
 }
 
 @Composable
-private fun AttitudeCard(side: Boolean, reading: String) {
+private fun AttitudeCard(side: Boolean, reading: String, modifier: Modifier = Modifier) {
  val angle = reading.toFloatOrNull()
- Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
-  Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+ Card(modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+  Column(
+   Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp),
+   horizontalAlignment = Alignment.CenterHorizontally,
+  ) {
    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
     Column(Modifier.weight(1f)) {
-     Text(if (side) "俯仰" else "侧倾", style = MaterialTheme.typography.titleMedium)
-     Text(if (side) "左视图 · 车头朝左" else "正后视图", color = MaterialTheme.colorScheme.onSurfaceVariant,
-      style = MaterialTheme.typography.labelMedium)
+     Text(if (side) "俯仰" else "侧倾", style = MaterialTheme.typography.titleSmall)
+     Text(
+      if (side) "左视图 · 坡度 ${gradeLabel(reading)}" else "正后视图",
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+      style = MaterialTheme.typography.labelSmall, maxLines = 1)
     }
     Text(if (angle == null) "—" else "$reading°", color = MaterialTheme.colorScheme.primary,
-     style = MaterialTheme.typography.headlineMedium.copy(fontFeatureSettings = "tnum", fontWeight = FontWeight.Medium))
+     style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum", fontWeight = FontWeight.Medium),
+     maxLines = 1)
    }
-   AttitudeDial(side, reading, Modifier.fillMaxWidth().height(158.dp))
-   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-    Text(if (angle == null) "等待当前姿态数据" else if (side) "正向：车头向下" else "正向：左侧抬起",
-     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    if (side) GradeReading(reading)
+   Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+    AttitudeDial(side, reading, Modifier.fillMaxHeight().aspectRatio(1f))
    }
   }
  }
@@ -501,7 +553,7 @@ private fun AttitudeDial(side: Boolean, reading: String, modifier: Modifier) {
 }
 
 @Composable
-internal fun CompactAttitude(frame: ReplayFrame?, horizontal: Boolean = false) {
+internal fun CompactAttitude(frame: ReplayFrame?, horizontal: Boolean = false, history: ReplayData? = null) {
  val model = rememberDashboardModel(frame)
  val angles = model.attitude
  Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -518,15 +570,22 @@ internal fun CompactAttitude(frame: ReplayFrame?, horizontal: Boolean = false) {
   }
   if (horizontal) {
    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-    for (side in listOf(true, false)) {
-     val angle = angles[if (side) 1 else 0]
-     Card(Modifier.weight(1f).fillMaxHeight(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
-      Column(Modifier.fillMaxSize().padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-       Text(if (side) "俯仰 · 左视" else "侧倾 · 后视", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-       AttitudeDial(side, angle, Modifier.weight(1f).fillMaxWidth())
-       Text(if (angle == "—") angle else "$angle°", style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum"), color = MaterialTheme.colorScheme.primary)
-       if (side) GradeReading(angle)
-      }
+    val pitch = angles[1]
+    val roll = angles[0]
+    Card(Modifier.weight(1f).fillMaxHeight(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+     Column(Modifier.fillMaxSize().padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+      Text("俯仰 · 左视", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      AttitudeDial(true, pitch, Modifier.weight(1f).fillMaxWidth())
+      Text(if (pitch == "—") pitch else "$pitch°", style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum"), color = MaterialTheme.colorScheme.primary)
+      GradeReading(pitch)
+     }
+    }
+    GgCard(frame, history, Modifier.weight(1f).fillMaxHeight(), compact = true)
+    Card(Modifier.weight(1f).fillMaxHeight(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+     Column(Modifier.fillMaxSize().padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+      Text("侧倾 · 后视", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      AttitudeDial(false, roll, Modifier.weight(1f).fillMaxWidth())
+      Text(if (roll == "—") roll else "$roll°", style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum"), color = MaterialTheme.colorScheme.primary)
      }
     }
    }
