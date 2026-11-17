@@ -83,6 +83,51 @@ class PerformanceRepositoryTest {
     }
 
     @Test
+    fun recomputeDoesNotChangeOriginalTestTime() {
+        val repo = PerformanceRepository(temp.newFolder("perf-original-time"))
+        val config = PerformanceConfig(
+            mode = PerformanceMode.ACCEL_0_TO_X,
+            startSpeedKmh = 0.0,
+            endSpeedKmh = 36.0,
+            zero = ZeroSpeedConfig(0.5, 1.0, 100, 2),
+            quality = QualityConfig(maxSampleGapNs = 2_000_000_000L),
+        )
+        val handle = repo.createAttempt(config)
+        var seq = 1L
+        var t = 1_000_000_000L
+        repeat(4) {
+            repo.appendSample(handle, sample(seq++, t, 0.0))
+            t += 50_000_000L
+        }
+        val n = 41
+        for (i in 0 until n) {
+            val alpha = i.toDouble() / (n - 1)
+            repo.appendSample(handle, sample(seq++, t, 15.0 * alpha))
+            t += 50_000_000L
+        }
+        repo.closeSamples(handle)
+        val stored = repo.loadSamples(handle.dir)
+        val result = PerformanceEngine().recompute(config, stored)
+        assertEquals(PerformancePhase.Completed, result.phase)
+        val v1 = repo.writeResult(handle.copy(samplesAlreadyClosed = true), result)
+        val original = 1_699_999_200_000L
+        assertTrue(v1.setLastModified(original))
+        val storedOriginal = v1.lastModified()
+        repo.recompute(handle.dir)
+        val later = storedOriginal + 120_000L
+        assertTrue(File(handle.dir, "result-v2.json").setLastModified(later))
+        assertTrue(handle.dir.setLastModified(later))
+        val listed = repo.listAttempts().single { it.id == handle.id }
+        assertEquals(storedOriginal, listed.modifiedMs)
+        val earlier = repo.createAttempt(config)
+        val earlierTime = storedOriginal - 120_000L
+        assertTrue(File(earlier.dir, "speed_samples.csv").setLastModified(earlierTime))
+        assertTrue(File(earlier.dir, "config.json").setLastModified(earlierTime))
+        assertTrue(earlier.dir.setLastModified(earlierTime))
+        assertEquals(handle.id, repo.listAttempts().map { it.id }.first())
+    }
+
+    @Test
     fun configRoundTripPreservesQualityGates() {
         val repo = PerformanceRepository(temp.newFolder("performance"))
         val config = PerformanceConfig(

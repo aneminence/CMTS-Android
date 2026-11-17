@@ -18,8 +18,8 @@ class PerformanceRepository(private val root: File) {
         val dir = attemptsDir()
         return dir.listFiles()
             ?.filter { it.isDirectory }
-            ?.sortedByDescending { it.lastModified() }
             ?.mapNotNull { summarize(it) }
+            ?.sortedByDescending { it.modifiedMs }
             ?: emptyList()
     }
 
@@ -135,7 +135,7 @@ class PerformanceRepository(private val root: File) {
         return AttemptSummary(
             id = dir.name,
             dir = dir,
-            modifiedMs = dir.lastModified(),
+            modifiedMs = originalTestTimeMs(dir),
             mode = config.mode,
             startSpeedKmh = config.startSpeedKmh,
             endSpeedKmh = config.endSpeedKmh,
@@ -145,6 +145,25 @@ class PerformanceRepository(private val root: File) {
             latestDurationNs = latest?.second?.durationNs,
             latestDistanceMeters = latest?.second?.distanceMeters,
         )
+    }
+
+    /** First official result time. Recompute must not move this. */
+    private fun originalTestTimeMs(dir: File): Long {
+        val v1 = File(dir, "result-v1.json")
+        if (v1.isFile) return v1.lastModified()
+        val earliestResult = dir.listFiles()
+            ?.mapNotNull { f ->
+                val n = Regex("""result-v(\d+)\.json""").matchEntire(f.name)?.groupValues?.get(1)?.toIntOrNull()
+                if (n != null) n to f else null
+            }
+            ?.minByOrNull { it.first }
+            ?.second
+        if (earliestResult != null) return earliestResult.lastModified()
+        val samples = File(dir, "speed_samples.csv")
+        if (samples.isFile) return samples.lastModified()
+        val config = File(dir, "config.json")
+        if (config.isFile) return config.lastModified()
+        return dir.lastModified()
     }
 
     private fun nextResultVersion(dir: File): Int {

@@ -87,7 +87,9 @@ class PerformanceEngineTest {
         assertNotNull(result.durationNs)
         val got = result.durationSeconds()!!
         assertEquals(expected, got, 1e-3)
-        assertNull("accel modes report time only", result.distanceMeters)
+        val expectedDist = (launch + end) / 2.0 * expected
+        assertNotNull(result.distanceMeters)
+        assertEquals(expectedDist, result.distanceMeters!!, 5e-2)
         assertEquals(PERFORMANCE_ENGINE_VERSION, result.algorithmVersion)
         assertTrue(result.zeroDefinition.contains("launch="))
     }
@@ -150,7 +152,10 @@ class PerformanceEngineTest {
         val result = PerformanceEngine().recompute(cfg, prep + listOf(a, b))
         assertEquals(PerformancePhase.Completed, result.phase)
         // t_start = t0 + (10-0)/(30-0)*1s = 1/3 s; t_end = 20/30 s; dur = 1/3 s
+        // distance = (10+20)/2 * 1/3 = 5 m
         assertEquals(1.0 / 3.0, result.durationSeconds()!!, 1e-6)
+        assertNotNull(result.distanceMeters)
+        assertEquals(5.0, result.distanceMeters!!, 1e-6)
     }
 
     @Test

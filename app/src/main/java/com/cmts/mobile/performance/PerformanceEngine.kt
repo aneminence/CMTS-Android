@@ -529,7 +529,7 @@ class PerformanceEngine {
         val duration = if (start != null && end != null && end.timeNanos >= start.timeNanos) {
             end.timeNanos - start.timeNanos
         } else null
-        val distance = if (cfg.isBraking() && phaseOut == PerformancePhase.Completed && duration != null) {
+        val distance = if (phaseOut == PerformancePhase.Completed && duration != null) {
             distanceMeters
         } else null
         val zeroDef =
