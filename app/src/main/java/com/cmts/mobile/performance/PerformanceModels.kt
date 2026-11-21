@@ -1,10 +1,10 @@
 package com.cmts.mobile.performance
 
 /** Algorithm version stamped into every result. Bump when formulas or zero-speed rules change. */
-const val PERFORMANCE_ENGINE_VERSION = "perf-engine-1.0.0"
+const val PERFORMANCE_ENGINE_VERSION = "perf-engine-1.1.0"
 
 enum class PerformanceMode {
-    /** 0 → X km/h acceleration time (launch hysteresis uses stop/launch thresholds). */
+    /** 0 → X km/h: start after leaving accelLaunch and not falling back to it, then to end. */
     ACCEL_0_TO_X,
     /** X → Y km/h interval acceleration, Y > X. */
     ACCEL_X_TO_Y,
@@ -53,20 +53,24 @@ enum class QualityReason {
 data class ZeroSpeedConfig(
     /** Speeds at or below this (km/h) count toward stationary. Tuning suggestion, not a validated spec. */
     val stopSpeedKmh: Double = 0.5,
-    /** Rising through this (km/h) starts 0→X timing. Must be > stopSpeedKmh. */
+    /** Brake-confirm hysteresis: rising through this (km/h) cancels an X→0 finish confirm. Must be > stopSpeedKmh. */
     val launchSpeedKmh: Double = 1.0,
     /** Continuous hold at/below stop before Ready / finish confirm. */
     val stationaryHoldMs: Long = 1_000L,
     val minStationarySamples: Int = 3,
+    /** 0→X start threshold (km/h). Leave this and do not fall back; may equal stopSpeedKmh. Distinct from brake end. */
+    val accelLaunchSpeedKmh: Double = 0.5,
 ) {
     init {
         require(stopSpeedKmh >= 0.0 && stopSpeedKmh.isFinite())
         require(launchSpeedKmh > stopSpeedKmh && launchSpeedKmh.isFinite())
+        require(accelLaunchSpeedKmh >= 0.0 && accelLaunchSpeedKmh.isFinite())
         require(stationaryHoldMs >= 0L)
         require(minStationarySamples >= 1)
     }
     fun stopMps(): Double = stopSpeedKmh / 3.6
     fun launchMps(): Double = launchSpeedKmh / 3.6
+    fun accelLaunchMps(): Double = accelLaunchSpeedKmh / 3.6
 }
 
 data class QualityConfig(
@@ -112,7 +116,7 @@ data class PerformanceConfig(
         when (mode) {
             PerformanceMode.ACCEL_0_TO_X -> {
                 require(startSpeedKmh == 0.0) { "ACCEL_0_TO_X start must be 0 km/h" }
-                require(endSpeedKmh > zero.launchSpeedKmh)
+                require(endSpeedKmh > zero.accelLaunchSpeedKmh)
             }
             PerformanceMode.ACCEL_X_TO_Y -> require(endSpeedKmh > startSpeedKmh)
             PerformanceMode.BRAKE_X_TO_0 -> {

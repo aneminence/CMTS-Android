@@ -235,7 +235,7 @@ class PerformanceEngine {
                 trackStationary(cfg, sample.sampleTimeNanos, speed <= cfg.zero.stopMps())
                 if (bandSatisfied(cfg)) phase = PerformancePhase.Ready
                 if (phase == PerformancePhase.Ready && prev != null && prevSpeed != null) {
-                    risingCross(prev, prevSpeed, sample, speed, cfg.zero.launchMps())?.let { start ->
+                    risingCross(prev, prevSpeed, sample, speed, cfg.zero.accelLaunchMps())?.let { start ->
                         beginRun(start, sample, speed)
                         risingCross(prev, prevSpeed, sample, speed, cfg.endMps())?.let { end ->
                             if (end.timeNanos >= start.timeNanos) completeAccel(cfg, end)
@@ -296,6 +296,10 @@ class PerformanceEngine {
         prevSpeed: Double?,
     ) {
         if (prev == null || prevSpeed == null) return
+        if (cfg.mode == PerformanceMode.ACCEL_0_TO_X && speed <= cfg.zero.accelLaunchMps()) {
+            abortAccelIfDroppedBack()
+            return
+        }
         integrate(prev.sampleTimeNanos, prevSpeed, sample.sampleTimeNanos, speed)
         when (cfg.mode) {
             PerformanceMode.ACCEL_0_TO_X, PerformanceMode.ACCEL_X_TO_Y ->
@@ -322,6 +326,19 @@ class PerformanceEngine {
             phase = PerformancePhase.Running
             resetBand()
         }
+    }
+
+    private fun abortAccelIfDroppedBack() {
+        startCrossing = null
+        endCrossing = null
+        finishCandidate = null
+        distanceMeters = 0.0
+        segment.clear()
+        runStartedAtNanos = null
+        // Stay Ready so the next leave of accelLaunch can start immediately,
+        // even if the dip below the threshold is shorter than the stationary hold.
+        phase = PerformancePhase.Ready
+        resetBand()
     }
 
     private fun beginRun(cross: CrossingPoint, sample: SpeedSample, speed: Double) {
@@ -534,8 +551,10 @@ class PerformanceEngine {
         } else null
         val zeroDef =
             "stop=${cfg.zero.stopSpeedKmh} km/h, launch=${cfg.zero.launchSpeedKmh} km/h, " +
+                "accelLaunch=${cfg.zero.accelLaunchSpeedKmh} km/h, " +
                 "hold=${cfg.zero.stationaryHoldMs} ms, minSamples=${cfg.zero.minStationarySamples}; " +
-                "0→X starts at launch threshold; X→0 ends at stop threshold after stationary confirm " +
+                "0→X starts after leaving accelLaunch and not falling back to it, then to end; " +
+                "X→0 ends at stop threshold after stationary confirm " +
                 "(confirm wait excluded from score). Operational definition — not exact physical zero."
         return PerformanceResult(
             config = cfg,

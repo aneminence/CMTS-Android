@@ -59,13 +59,12 @@ class PerformanceEngineTest {
 
     @Test
     fun uniformAccel0toX_hasAnalyticalDuration() {
-        // After stationary, launch at 1 km/h≈0.277.. and end at 100 km/h≈27.777...
-        // Constant accel: v = a*t from 0, but timing starts at launch threshold.
+        // After stationary, launch at 0.5 km/h and end at 100 km/h.
+        // Constant accel: v = a*t from 0, but timing starts at accelLaunch.
         // Construct linear ramp 0 → 30 m/s in 6 s (a=5 m/s²).
-        // t_launch = 1/3.6 / 5, t_end = (100/3.6)/5
         val a = 5.0
         val endKmh = 100.0
-        val launch = 1.0 / 3.6
+        val launch = 0.5 / 3.6
         val end = endKmh / 3.6
         val expected = (end - launch) / a
         val cfg = PerformanceConfig(
@@ -441,5 +440,73 @@ class PerformanceEngineTest {
         assertEquals(PerformancePhase.Armed, snap.phase)
         assertTrue(snap.reasons.contains(QualityReason.WATCHDOG_STALE) || snap.quality == QualityTier.WARN || snap.quality == QualityTier.PASS)
         assertTrue(snap.phase != PerformancePhase.Invalid)
+    }
+
+    @Test
+    fun accel0toX_dropBackBelowLaunch_cancelsAndRestarts() {
+        val cfg = PerformanceConfig(
+            mode = PerformanceMode.ACCEL_0_TO_X,
+            startSpeedKmh = 0.0,
+            endSpeedKmh = 50.0,
+            zero = zero.copy(stationaryHoldMs = 100L, minStationarySamples = 2),
+            quality = QualityConfig(maxSampleGapNs = 2_000_000_000L),
+        )
+        val launch = 0.5 / 3.6
+        val end = 50.0 / 3.6
+        val dt = 50_000_000L
+        val hold = stationary(0.0, 4, 1_000_000_000L, dt, 1)
+        var t = hold.last().sampleTimeNanos
+        var seq = hold.last().sequence
+        val creep = mutableListOf<SpeedSample>()
+        // First leave of 0.5 km/h, then fall back below it (must not keep this start).
+        for (v in listOf(launch * 0.5, launch, launch * 2.0, launch * 0.4)) {
+            t += dt
+            creep += sample(++seq, t, v)
+        }
+        // Real launch after a short dip, then a 2 s ramp launch→end+ (a chosen by points).
+        val tRamp0 = t + dt
+        val rampSamples = ramp(0.0, end * 1.2, 2.0, 20.0, tRamp0, seq + 1)
+        val result = PerformanceEngine().recompute(cfg, hold + creep + rampSamples)
+        assertEquals(PerformancePhase.Completed, result.phase)
+        val a = (end * 1.2) / 2.0
+        val expected = (end - launch) / a
+        assertEquals(expected, result.durationSeconds()!!, 2e-3)
+    }
+
+    @Test
+    fun accel0toX_touchLaunchThenDrop_doesNotKeepStart() {
+        // Mirrors the fifth vbox.vbo 0→50: speed touches 0.5 km/h exactly, drops back, then leaves again.
+        val cfg = PerformanceConfig(
+            mode = PerformanceMode.ACCEL_0_TO_X,
+            startSpeedKmh = 0.0,
+            endSpeedKmh = 50.0,
+            zero = zero.copy(stationaryHoldMs = 80L, minStationarySamples = 2),
+            quality = QualityConfig(maxSampleGapNs = 2_000_000_000L),
+        )
+        val launch = 0.5 / 3.6
+        val end = 50.0 / 3.6
+        val dt = 10_000_000L // 100 Hz
+        val hold = stationary(0.0, 10, 1_000_000_000L, dt, 1)
+        var t = hold.last().sampleTimeNanos
+        var seq = hold.last().sequence
+        fun add(v: Double): SpeedSample {
+            t += dt
+            return sample(++seq, t, v)
+        }
+        val mid = listOf(
+            add(launch * 0.9),
+            add(launch),          // first touch
+            add(launch * 0.3),    // drop back
+            add(launch * 0.9),
+            add(launch),          // real leave
+        )
+        // Next sample must be above launch; staying at launch would count as a fall-back.
+        val vRamp0 = launch + 0.05
+        val tRamp0 = t + dt
+        val rampSamples = ramp(vRamp0, end * 1.1, 2.0, 100.0, tRamp0, seq + 1)
+        val result = PerformanceEngine().recompute(cfg, hold + mid + rampSamples)
+        assertEquals(PerformancePhase.Completed, result.phase)
+        val expected = (tRamp0 - mid.last().sampleTimeNanos) / 1e9 + 2.0 * (end - vRamp0) / (end * 1.1 - vRamp0)
+        assertEquals(expected, result.durationSeconds()!!, 3e-3)
     }
 }

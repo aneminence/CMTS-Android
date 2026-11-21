@@ -42,8 +42,8 @@ class MultiSegmentEngineTest {
         val e2 = PerformanceEngine().recompute(c2, samples)
         assertEquals(PerformancePhase.Completed, e1.phase)
         assertEquals(PerformancePhase.Completed, e2.phase)
-        // launch 1/3.6 m/s → 10 m/s at a=5: (10 - 1/3.6)/5
-        val launch = 1.0 / 3.6
+        // accelLaunch 0.5/3.6 m/s → 10 m/s at a=5
+        val launch = 0.5 / 3.6
         assertEquals((10.0 - launch) / 5.0, e1.durationSeconds()!!, 2e-3)
         // 10→20 at a=5 → 2.0 s
         assertEquals(2.0, e2.durationSeconds()!!, 2e-3)
