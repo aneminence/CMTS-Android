@@ -2,8 +2,8 @@
 
 - 仓库：https://github.com/aneminence/CMTS-Android ，本地路径 `D:\CMTS\android`
 - 当前软件版本：`0.1.8` / `versionCode` 9，包名 `com.cmts.mobile`，显示名 CMTS
-- 默认分支：`master`（0.1.8 已推主线；本版按用户要求未打标签、未发 Release）
-- 最近一次更新：2026-11-21 Asia/Shanghai，CMTS · Android开发（合入 0.1.8）
+- 默认分支：`master`（0.1.8 已推主线；标签与 GitHub Release 为 v0.1.8）
+- 最近一次更新：2026-11-27 Asia/Shanghai，CMTS · Android开发（发布 0.1.8 Release）
 
 对照当前 `master` 源码整理。验收状态另行标明。
 

@@ -207,7 +207,7 @@ $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 - 重算写入新的 `result-vN` 后，列表「测试时间」仍用首次正式成绩时间，不会改成重算时刻。
 - 起步加速 `0→X` 切段对齐 VBOX：离开约 0.5 km/h 后若再掉回 0.5，取消本段并等待下次离开，再积到终点；距离为速度积分。起步门槛 0.5 与制动终点不是同一值。用 `vbox.vbo` 的七次 0→50 成绩与 VBOX 对上。
 - 引擎版本 `perf-engine-1.1.0`。停车制动按 VBOX 捕获真实制动事件、80→0.8 的切段尚未合入本版。
-- 验证：单元测试通过（含该 VBO 速度序列对标）。**未宣称室外实车验收通过**。本版未打 GitHub Release。
+- 验证：`assembleDebug testDebugUnitTest lintDebug` 通过，176 项单元测试全部通过（含该 VBO 速度序列对标）。**未宣称室外实车验收通过**。
 - 版本号：`versionName 0.1.8` / `versionCode` 9。
 
 ### 0.1.7 — 2026-11-17
