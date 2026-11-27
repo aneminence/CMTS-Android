@@ -4,9 +4,9 @@
 
 Android：Android Studio + Kotlin 2.0.21 + Jetpack Compose + AGP 8.7.3 + Gradle 8.9，JDK 17。Windows：原有 Visual Studio / WPF 独立使用；不修改解决方案或全局 Java/PATH。
 
-Android Studio 打开 D:/CMTS/android。SDK Manager 安装 Platform 35、Build Tools 34.0.0、Platform Tools、Emulator、Command-line Tools，以及 API 35 Google APIs x86_64 镜像。在项目 Gradle 设置选择兼容的 JDK，避免改变 Windows 开发环境。
+在 Android Studio 中打开 `CMTS-Android` 工程目录。SDK Manager 安装 Platform 35、Build Tools 34.0.0、Platform Tools、Emulator、Command-line Tools，以及 API 35 Google APIs x86_64 镜像。在项目 Gradle 设置选择兼容的 JDK，避免改变 Windows 开发环境。
 
-当前网络无法解析 raw.githubusercontent.com，官方 Wrapper 下载失败。安装 Gradle 8.9 后在 android 目录执行 `gradle wrapper --gradle-version 8.9 --distribution-type bin`，生成官方 wrapper，再使用 `./gradlew.bat`。不要把缺失 wrapper 的工程当作可直接同步成功。
+当前网络无法解析 raw.githubusercontent.com，官方 Wrapper 下载失败。安装 Gradle 8.9 后在工程根目录执行 `gradle wrapper --gradle-version 8.9 --distribution-type bin`，生成官方 wrapper，再使用 `./gradlew.bat`。不要把缺失 wrapper 的工程当作可直接同步成功。
 
 ## Emulator
 

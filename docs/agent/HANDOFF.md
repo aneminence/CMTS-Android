@@ -21,7 +21,7 @@
 
 ## 关键代码位置
 
-- 工程根：`D:\CMTS\android`，分支 `master`
+- 工程根：本地目录 `CMTS-Android`，分支 `master`
 - 行程算法与缓存：`TripMetrics.kt`、`SessionCatalog.kt`、`CaptureService.kt`
 - 记录列表与打开文件：`RecordsScreen.kt`、`Kml.kt`、`MainActivity.kt`
 - 仪表与 GG 图：`Dashboard.kt`、`GgPlot.kt`

@@ -79,4 +79,4 @@
 
 ## 仓库外
 
-Windows：`D:\CMTS\Chassis Master Test Suite`（只读参考）。
+Windows：同级目录 `../CMTS-Win`（只读参考）。

@@ -1,6 +1,6 @@
 # CMTS Android — Agent 规则
 
-范围：仅本仓库（P16 上为 `D:\CMTS\android`）。**不要**修改 Windows 客户端 `D:\CMTS\Chassis Master Test Suite`。**不要**刷写 RK3588 或改动供应商系统镜像。
+范围：仅本仓库，本地目录为 `CMTS-Android`。**不要**修改同级 `CMTS-Win` 中的 Windows 客户端。**不要**刷写 RK3588 或改动供应商系统镜像。
 
 ## 开始任务前必读
 
